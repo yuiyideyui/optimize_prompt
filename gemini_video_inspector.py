@@ -89,6 +89,10 @@ class GeminiVideoInspector:
                         "default": "检查动作是否连贯、画面有无畸变、主体是否符合提示词",
                     },
                 ),
+                "provider": (
+                    ["gemini", "openai", "claude"],
+                    {"default": "gemini"},
+                ),
                 "api_key": ("STRING", {"default": ""}),
                 "model_name": (
                     "STRING",
@@ -132,6 +136,7 @@ class GeminiVideoInspector:
         images,
         user_prompt,
         evaluation_criteria,
+        provider,
         api_key,
         model_name,
         base_url,
@@ -166,6 +171,48 @@ class GeminiVideoInspector:
             prev_h3_optimize_prompt,
         )
 
+        if provider == "gemini":
+            response_text = self._call_gemini(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout
+            )
+        elif provider == "openai":
+            response_text = self._call_openai(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout
+            )
+        elif provider == "claude":
+            response_text = self._call_claude(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout
+            )
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
+
+        result = self._parse_response(response_text, pass_threshold)
+        if (
+            prev_score is not None
+            and prev_score > result["score"]
+            and prev_h3_optimize_prompt
+            and prev_h3_optimize_prompt.strip()
+        ):
+            result["h3_optimize_prompt"] = prev_h3_optimize_prompt
+
+        log_text = self._format_log(
+            system_prompt, response_text, result, pass_threshold
+        )
+
+        return (
+            result["passed"],
+            result["score"],
+            result["feedback"],
+            log_text,
+            result["h3_optimize_prompt"],
+        )
+
+    @staticmethod
+    def _call_gemini(base_url, model_name, api_key, system_prompt, image_data,
+                     temperature, max_tokens, timeout):
         parts = []
         parts.extend(
             {"inline_data": {"mime_type": "image/png", "data": image}}
@@ -188,28 +235,91 @@ class GeminiVideoInspector:
             payload,
             timeout,
         )
-        response_text = _gemini_text(response)
+        return _gemini_text(response)
 
-        result = self._parse_response(response_text, pass_threshold)
-        if (
-            prev_score is not None
-            and prev_score > result["score"]
-            and prev_h3_optimize_prompt
-            and prev_h3_optimize_prompt.strip()
-        ):
-            result["h3_optimize_prompt"] = prev_h3_optimize_prompt
+    @staticmethod
+    def _call_openai(base_url, model_name, api_key, system_prompt, image_data,
+                     temperature, max_tokens, timeout):
+        base_url = base_url.strip().rstrip("/")
+        if not base_url:
+            base_url = "https://api.openai.com/v1"
 
-        log_text = self._format_log(
-            system_prompt, response_text, result, pass_threshold
+        url = f"{base_url}/chat/completions"
+
+        content = [{"type": "text", "text": system_prompt}]
+        for image in image_data:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{image}"}
+            })
+
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"}
+        }
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+        response = _post_json(url, headers, payload, timeout)
+
+        choices = response.get("choices")
+        if not choices:
+            raise RuntimeError(f"OpenAI response did not contain choices: {response}")
+
+        message = choices[0].get("message", {})
+        text = message.get("content", "")
+        if not text:
+            raise RuntimeError(f"OpenAI response did not contain content: {response}")
+
+        return text
+
+    @staticmethod
+    def _call_claude(base_url, model_name, api_key, system_prompt, image_data,
+                     temperature, max_tokens, timeout):
+        base_url = base_url.strip().rstrip("/")
+        if not base_url:
+            base_url = "https://api.anthropic.com/v1"
+
+        url = f"{base_url}/messages"
+
+        content = []
+        for image in image_data:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": image
+                }
+            })
+        content.append({"type": "text", "text": system_prompt})
+
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01"
+        }
+        response = _post_json(url, headers, payload, timeout)
+
+        content_blocks = response.get("content")
+        if not content_blocks:
+            raise RuntimeError(f"Claude response did not contain content: {response}")
+
+        text = "".join(
+            block.get("text", "") for block in content_blocks if block.get("type") == "text"
         )
+        if not text:
+            raise RuntimeError(f"Claude response did not contain text: {response}")
 
-        return (
-            result["passed"],
-            result["score"],
-            result["feedback"],
-            log_text,
-            result["h3_optimize_prompt"],
-        )
+        return text
 
     @staticmethod
     def _build_system_prompt(

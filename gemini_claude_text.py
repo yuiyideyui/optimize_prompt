@@ -94,12 +94,34 @@ def _claude_text(response):
     return text
 
 
+def _openai_url(base_url):
+    base_url = base_url.strip().rstrip("/")
+    if not base_url:
+        return "https://api.openai.com/v1/chat/completions"
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    if base_url.endswith("/v1"):
+        return f"{base_url}/chat/completions"
+    return f"{base_url}/v1/chat/completions"
+
+
+def _openai_text(response):
+    choices = response.get("choices")
+    if not choices:
+        raise RuntimeError(f"OpenAI response did not contain choices: {response}")
+    message = choices[0].get("message", {})
+    text = message.get("content", "")
+    if not text:
+        raise RuntimeError(f"OpenAI response did not contain content: {response}")
+    return text
+
+
 class GeminiClaudeText:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "provider": (["gemini", "claude"], {"default": "gemini"}),
+                "provider": (["gemini", "claude", "openai"], {"default": "gemini"}),
                 "user_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "systems_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "api_key": ("STRING", {"default": ""}),
@@ -164,19 +186,34 @@ class GeminiClaudeText:
                 timeout,
                 image_data,
             ),)
-
-        return (self._generate_claude(
-            user_prompt,
-            systems_prompt,
-            api_key,
-            model,
-            base_url,
-            temperature,
-            top_p,
-            max_tokens,
-            timeout,
-            image_data,
-        ),)
+        elif provider == "claude":
+            return (self._generate_claude(
+                user_prompt,
+                systems_prompt,
+                api_key,
+                model,
+                base_url,
+                temperature,
+                top_p,
+                max_tokens,
+                timeout,
+                image_data,
+            ),)
+        elif provider == "openai":
+            return (self._generate_openai(
+                user_prompt,
+                systems_prompt,
+                api_key,
+                model,
+                base_url,
+                temperature,
+                top_p,
+                max_tokens,
+                timeout,
+                image_data,
+            ),)
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
 
     @staticmethod
     def _generate_gemini(
@@ -262,6 +299,49 @@ class GeminiClaudeText:
             timeout,
         )
         return _claude_text(response)
+
+    @staticmethod
+    def _generate_openai(
+        user_prompt,
+        systems_prompt,
+        api_key,
+        model,
+        base_url,
+        temperature,
+        top_p,
+        max_tokens,
+        timeout,
+        image_data,
+    ):
+        content = [{"type": "text", "text": user_prompt}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{image}"}
+            }
+            for image in image_data
+        )
+
+        messages = []
+        if systems_prompt.strip():
+            messages.append({"role": "system", "content": systems_prompt})
+        messages.append({"role": "user", "content": content})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+        }
+
+        response = _post_json(
+            _openai_url(base_url),
+            {"Authorization": f"Bearer {api_key}"},
+            payload,
+            timeout,
+        )
+        return _openai_text(response)
 
 
 NODE_CLASS_MAPPINGS = {
