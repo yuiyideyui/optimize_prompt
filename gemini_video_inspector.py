@@ -8,6 +8,7 @@ import urllib.request
 
 from PIL import Image
 from .utils.network_retry import retry_on_network_error
+from .utils.video_processor import VideoProcessor
 
 
 @retry_on_network_error(max_retries=4, retry_delay=60)
@@ -172,16 +173,22 @@ class GeminiVideoInspector:
             raise ValueError("evaluation_criteria cannot be empty")
 
         # 处理视频或图像输入
+        video_file = None
+        audio_data = None
+
         if video is not None:
-            # 视频输入：提取所有帧，忽略 frame_count 和 select_every_nth
+            # 视频输入：提取所有帧和音频，合并为视频文件
             if isinstance(video, dict):
-                # 如果是字典格式，获取帧数据
+                # 如果是字典格式，获取帧数据和音频
                 selected_images = video.get("frames", video)
+                audio_data = video.get("audio")
             elif hasattr(video, "frames"):
                 # 如果有 frames 属性，使用它
                 selected_images = video.frames
+                audio_data = getattr(video, "audio", None)
             else:
                 selected_images = video
+                audio_data = None
 
             # 计算实际帧数
             if isinstance(selected_images, (list, tuple)):
@@ -189,10 +196,12 @@ class GeminiVideoInspector:
             elif hasattr(selected_images, "__len__"):
                 actual_frame_count = len(selected_images)
             else:
-                # 如果是图像张量或其他形式，假设第一维是帧数
                 actual_frame_count = selected_images.shape[0] if hasattr(selected_images, "shape") else 1
 
             actual_select_every_nth = 1
+            # 合并视频帧和音频为文件
+            video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+
         elif images is not None:
             # 图像输入：使用原有逻辑
             actual_frame_count = frame_count if frame_count is not None else len(images)
@@ -206,14 +215,19 @@ class GeminiVideoInspector:
         else:
             raise ValueError("images 或 video 必须提供其中之一")
 
-        image_data = _image_parts(selected_images)
-        if not image_data:
-            raise ValueError("images cannot be empty")
+        if video_file:
+            # 视频模式：已创建视频文件，稍后用文件上传
+            image_data = None
+        else:
+            # 图像模式：转换为 base64
+            image_data = _image_parts(selected_images)
+            if not image_data:
+                raise ValueError("images cannot be empty")
 
         system_prompt = self._build_system_prompt(
             user_prompt,
             evaluation_criteria,
-            len(image_data),
+            len(image_data) if image_data else actual_frame_count,
             actual_frame_count,
             actual_select_every_nth,
             prev_score,
@@ -222,66 +236,126 @@ class GeminiVideoInspector:
             prev_distilled_meta_prompt,
         )
 
-        if provider == "gemini":
-            response_text = self._call_gemini(
-                base_url, model_name, api_key, system_prompt, image_data,
-                temperature, max_tokens, timeout
-            )
-        elif provider == "openai":
-            response_text = self._call_openai(
-                base_url, model_name, api_key, system_prompt, image_data,
-                temperature, max_tokens, timeout
-            )
-        elif provider == "claude":
-            response_text = self._call_claude(
-                base_url, model_name, api_key, system_prompt, image_data,
-                temperature, max_tokens, timeout
-            )
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
-
-        result = self._parse_response(response_text, pass_threshold)
-
-        # 智能回退逻辑：当评分下降但并非大幅下降时，保留新的 h3_optimize_prompt 以继续探索
-        # 只有在评分显著下降（>1.5分）时才回退到旧的 system prompt
-        if (
-            prev_score is not None
-            and prev_h3_optimize_prompt
-            and prev_h3_optimize_prompt.strip()
-        ):
-            score_drop = prev_score - result["score"]
-            if score_drop > 1.5:
-                # 评分显著下降，回退到上一轮的 system prompt
-                result["h3_optimize_prompt"] = prev_h3_optimize_prompt
-                result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，已回退到上一轮的优化策略。"
-            elif score_drop > 0:
-                # 评分轻微下降，在 feedback 中提示但保留新的探索方向
-                result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，但保留新的优化策略继续探索。如果下一轮继续下降，建议回顾历史策略。"
-
-        # distilled_meta_prompt 回退逻辑：只在评分显著上升时更新
-        if prev_distilled_meta_prompt and prev_distilled_meta_prompt.strip():
-            if prev_score is None or result["score"] >= prev_score + 0.5:
-                # 首次运行或评分显著提升，使用新的 distilled_meta_prompt
-                pass
+        try:
+            if video_file:
+                # 视频模式：使用视频文件上传
+                response_text = self._call_gemini_video(
+                    base_url, model_name, api_key, system_prompt, video_file,
+                    temperature, max_tokens, timeout
+                )
             else:
-                # 评分未显著提升，保留旧的 distilled_meta_prompt
-                result["distilled_meta_prompt"] = prev_distilled_meta_prompt
+                # 图像模式：使用原有逻辑
+                if provider == "gemini":
+                    response_text = self._call_gemini(
+                        base_url, model_name, api_key, system_prompt, image_data,
+                        temperature, max_tokens, timeout
+                    )
+                elif provider == "openai":
+                    response_text = self._call_openai(
+                        base_url, model_name, api_key, system_prompt, image_data,
+                        temperature, max_tokens, timeout
+                    )
+                elif provider == "claude":
+                    response_text = self._call_claude(
+                        base_url, model_name, api_key, system_prompt, image_data,
+                        temperature, max_tokens, timeout
+                    )
+                else:
+                    raise ValueError(f"Unsupported provider: {provider}")
 
-        log_text = self._format_log(
-            system_prompt, response_text, result, pass_threshold
-        )
+            result = self._parse_response(response_text, pass_threshold)
 
-        return (
-            result["passed"],
-            result["score"],
-            result["feedback"],
-            log_text,
-            result["h3_optimize_prompt"],
-            result["distilled_meta_prompt"],
-        )
+            # 智能回退逻辑：当评分下降但并非大幅下降时，保留新的 h3_optimize_prompt 以继续探索
+            # 只有在评分显著下降（>1.5分）时才回退到旧的 system prompt
+            if (
+                prev_score is not None
+                and prev_h3_optimize_prompt
+                and prev_h3_optimize_prompt.strip()
+            ):
+                score_drop = prev_score - result["score"]
+                if score_drop > 1.5:
+                    # 评分显著下降，回退到上一轮的 system prompt
+                    result["h3_optimize_prompt"] = prev_h3_optimize_prompt
+                    result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，已回退到上一轮的优化策略。"
+                elif score_drop > 0:
+                    # 评分轻微下降，在 feedback 中提示但保留新的探索方向
+                    result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，但保留新的优化策略继续探索。如果下一轮继续下降，建议回顾历史策略。"
+
+            # distilled_meta_prompt 回退逻辑：只在评分显著上升时更新
+            if prev_distilled_meta_prompt and prev_distilled_meta_prompt.strip():
+                if prev_score is None or result["score"] >= prev_score + 0.5:
+                    # 首次运行或评分显著提升，使用新的 distilled_meta_prompt
+                    pass
+                else:
+                    # 评分未显著提升，保留旧的 distilled_meta_prompt
+                    result["distilled_meta_prompt"] = prev_distilled_meta_prompt
+
+            log_text = self._format_log(
+                system_prompt, response_text, result, pass_threshold
+            )
+
+            return (
+                result["passed"],
+                result["score"],
+                result["feedback"],
+                log_text,
+                result["h3_optimize_prompt"],
+                result["distilled_meta_prompt"],
+            )
+        finally:
+            # 清理临时视频文件
+            if video_file:
+                VideoProcessor.cleanup(video_file)
 
     @staticmethod
-    def _call_gemini(base_url, model_name, api_key, system_prompt, image_data,
+    def _call_gemini_video(base_url, model_name, api_key, system_prompt, video_path,
+                           temperature, max_tokens, timeout):
+        """上传视频文件到 Gemini API"""
+        with open(video_path, "rb") as f:
+            video_data = f.read()
+
+        upload_url = f"{base_url.rstrip('/')}/upload/sessions?key={api_key}"
+        boundary = "===============VideoUpload=="
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="video.mp4"\r\n'
+            f"Content-Type: video/mp4\r\n"
+            f"\r\n"
+        ).encode() + video_data + f"\r\n--{boundary}--\r\n".encode()
+
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+        upload_request = urllib.request.Request(
+            upload_url, data=body, headers=headers, method="POST"
+        )
+
+        try:
+            with urllib.request.urlopen(upload_request, timeout=timeout) as response:
+                upload_result = json.loads(response.read().decode("utf-8"))
+                file_uri = upload_result.get("file", {}).get("uri")
+                if not file_uri:
+                    raise RuntimeError(f"Upload response invalid: {upload_result}")
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Video upload failed ({error.code})") from error
+
+        parts = [
+            {"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}},
+            {"text": system_prompt}
+        ]
+
+        payload = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+
+        response = _post_json(_gemini_url(base_url, model_name, api_key), {}, payload, timeout)
+        return _gemini_text(response)
+
+    @staticmethod
                      temperature, max_tokens, timeout):
         parts = []
         parts.extend(
