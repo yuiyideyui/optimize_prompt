@@ -174,12 +174,24 @@ class GeminiVideoInspector:
         # 处理视频或图像输入
         if video is not None:
             # 视频输入：提取所有帧，忽略 frame_count 和 select_every_nth
-            if hasattr(video, "get"):
+            if isinstance(video, dict):
                 # 如果是字典格式，获取帧数据
-                selected_images = video.get("frames") if isinstance(video, dict) else video
+                selected_images = video.get("frames", video)
+            elif hasattr(video, "frames"):
+                # 如果有 frames 属性，使用它
+                selected_images = video.frames
             else:
                 selected_images = video
-            actual_frame_count = len(selected_images)
+
+            # 计算实际帧数
+            if isinstance(selected_images, (list, tuple)):
+                actual_frame_count = len(selected_images)
+            elif hasattr(selected_images, "__len__"):
+                actual_frame_count = len(selected_images)
+            else:
+                # 如果是图像张量或其他形式，假设第一维是帧数
+                actual_frame_count = selected_images.shape[0] if hasattr(selected_images, "shape") else 1
+
             actual_select_every_nth = 1
         elif images is not None:
             # 图像输入：使用原有逻辑
