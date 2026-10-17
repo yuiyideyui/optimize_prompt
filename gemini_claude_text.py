@@ -7,8 +7,10 @@ import urllib.parse
 import urllib.request
 
 from PIL import Image
+from .utils.network_retry import retry_on_network_error
 
 
+@retry_on_network_error(max_retries=4, retry_delay=60)
 def _post_json(url, headers, payload, timeout):
     request = urllib.request.Request(
         url,

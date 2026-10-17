@@ -47,6 +47,33 @@
 
 ---
 
+### 4. [Image Counter](utils/ImageCounter.md)
+**图像批次计数节点**
+
+- 统计输入图像批次的数量
+- 返回批次大小（整数）
+- 适用于调试、条件判断和流程控制
+- 零性能开销的实用工具节点
+
+**分类**: `my_comfyui/utils`  
+**[查看详细文档 →](utils/ImageCounter.md)**
+
+---
+
+### 5. [Network Retry](utils/NetworkRetry.md)
+**网络请求重试工具**
+
+- 为网络请求提供自动重试机制
+- 支持自定义重试次数和间隔时间
+- 默认配置：遇到错误后等待 60 秒重试，最多重试 4 次
+- 已集成到所有网络节点（Gemini / Claude Text、Video Inspector）
+- 提高不稳定网络环境下的工作流健壮性
+
+**类型**: 内部工具模块  
+**[查看详细文档 →](utils/NetworkRetry.md)**
+
+---
+
 ## 快速开始
 
 1. 将此文件夹放入 ComfyUI 的 `custom_nodes` 目录
@@ -62,9 +89,18 @@ my_comfyui/
 ├── __init__.py                      # 模块入口，注册所有节点
 ├── gemini_claude_text.py            # 文本生成节点实现
 ├── gemini_video_inspector.py        # 视频质检节点实现
+├── anime_pipeline/                  # 动画分镜管线
+│   ├── AutoAnimeStoryboardPipeline.py
+│   └── prompts.py
+├── utils/                           # 工具节点和模块
+│   ├── image_counter.py             # 图像计数节点实现
+│   ├── network_retry.py             # 网络重试工具（新增）
+│   ├── ImageCounter.md              # 图像计数节点文档
+│   └── NetworkRetry.md              # 网络重试工具文档（新增）
 ├── README.md                        # 项目主文档（当前文件）
 ├── gemini_claude_text.md            # 文本生成节点详细文档
-└── gemini_video_inspector.md        # 视频质检节点详细文档
+├── gemini_video_inspector.md        # 视频质检节点详细文档
+└── AutoAnimeStoryboardPipeline.md   # 动画分镜管线文档
 ```
 
 ## 依赖要求
@@ -87,8 +123,12 @@ my_comfyui/
 **Q: 节点没有出现在菜单中？**  
 A: 确保文件夹位置正确，重启 ComfyUI。检查控制台是否有报错信息。
 
-**Q: API 请求超时？**  
-A: 增加 `timeout` 参数值，或检查网络连接和 API 密钥是否有效。
+**Q: API 请求超时或网络错误？**  
+A: 所有网络节点已内置自动重试机制（默认：遇到错误后等待 60 秒重试，最多重试 4 次）。如果仍然失败，请检查：
+- 网络连接是否正常
+- API 密钥是否有效
+- 防火墙是否阻止了请求
+- API 服务是否正常运行
 
 **Q: 视频质检一直不通过？**  
 A: 降低 `pass_threshold` 阈值，或检查 `evaluation_criteria` 是否过于严格。
@@ -97,6 +137,11 @@ A: 降低 `pass_threshold` 阈值，或检查 `evaluation_criteria` 是否过于
 A: 使用 flash 模型（如 `gemini-2.0-flash-exp`），减少视频帧数，降低 `max_tokens`。
 
 ## 更新日志
+
+### v1.1.0 (2026-10-17)
+- ✨ 新增网络重试机制：所有网络节点支持自动重试（默认 4 次，间隔 60 秒）
+- 🔧 优化网络稳定性：提高不稳定网络环境下的工作流健壮性
+- 📝 新增 Network Retry 工具文档
 
 ### v1.0.0 (2026-10-17)
 - ✨ 新增 Gemini / Claude Text 节点
