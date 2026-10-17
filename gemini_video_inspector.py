@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -82,7 +83,6 @@ class GeminiVideoInspector:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE",),
                 "user_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "evaluation_criteria": (
                     "STRING",
@@ -116,6 +116,8 @@ class GeminiVideoInspector:
                 "timeout": ("INT", {"default": 120, "min": 1, "max": 600}),
             },
             "optional": {
+                "images": ("IMAGE",),
+                "video": ("VIDEO",),
                 "frame_count": ("INT", {"forceInput": True}),
                 "select_every_nth": ("INT", {"default": 1, "min": 1}),
                 "prev_score": ("FLOAT",),
@@ -139,7 +141,6 @@ class GeminiVideoInspector:
 
     def inspect(
         self,
-        images,
         user_prompt,
         evaluation_criteria,
         provider,
@@ -150,6 +151,8 @@ class GeminiVideoInspector:
         max_tokens,
         pass_threshold,
         timeout,
+        images=None,
+        video=None,
         frame_count=None,
         select_every_nth=1,
         prev_score=None,
@@ -168,15 +171,28 @@ class GeminiVideoInspector:
         if not evaluation_criteria.strip():
             raise ValueError("evaluation_criteria cannot be empty")
 
-        # 根据 select_every_nth 筛选图片
-        if select_every_nth > 1:
-            selected_images = images[::select_every_nth]
-        else:
-            selected_images = images
+        # 处理视频或图像输入
+        if video is not None:
+            # 视频输入：提取所有帧，忽略 frame_count 和 select_every_nth
+            if hasattr(video, "get"):
+                # 如果是字典格式，获取帧数据
+                selected_images = video.get("frames") if isinstance(video, dict) else video
+            else:
+                selected_images = video
+            actual_frame_count = len(selected_images)
+            actual_select_every_nth = 1
+        elif images is not None:
+            # 图像输入：使用原有逻辑
+            actual_frame_count = frame_count if frame_count is not None else len(images)
+            actual_select_every_nth = select_every_nth
 
-        # 如果没有提供 frame_count，使用输入图片的总数
-        if frame_count is None:
-            frame_count = len(images)
+            # 根据 select_every_nth 筛选图片
+            if select_every_nth > 1:
+                selected_images = images[::select_every_nth]
+            else:
+                selected_images = images
+        else:
+            raise ValueError("images 或 video 必须提供其中之一")
 
         image_data = _image_parts(selected_images)
         if not image_data:
@@ -186,8 +202,8 @@ class GeminiVideoInspector:
             user_prompt,
             evaluation_criteria,
             len(image_data),
-            frame_count,
-            select_every_nth,
+            actual_frame_count,
+            actual_select_every_nth,
             prev_score,
             prev_feedback,
             prev_h3_optimize_prompt,
@@ -522,8 +538,22 @@ distilled_meta_prompt 是从多轮迭代中**提炼出的通用规则**，它不
 
     @staticmethod
     def _parse_response(response_text, pass_threshold):
+        # 清洗响应文本，提取纯 JSON 内容
+        cleaned_text = response_text.strip()
+
+        # 尝试提取 Markdown 代码块中的 JSON
+        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', cleaned_text, re.DOTALL)
+        if match:
+            cleaned_text = match.group(1)
+        else:
+            # 尝试直接寻找第一个 { 和最后一个 }
+            start_idx = cleaned_text.find('{')
+            end_idx = cleaned_text.rfind('}')
+            if start_idx != -1 and end_idx != -1:
+                cleaned_text = cleaned_text[start_idx : end_idx + 1]
+
         try:
-            data = json.loads(response_text)
+            data = json.loads(cleaned_text)
             score = float(data.get("score", 0.0))
             passed = bool(data.get("passed", False))
             feedback = str(data.get("feedback", ""))
@@ -544,7 +574,7 @@ distilled_meta_prompt 是从多轮迭代中**提炼出的通用规则**，它不
             }
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             raise RuntimeError(
-                f"Failed to parse Gemini response as JSON: {response_text}"
+                f"Failed to parse response as JSON. Original text: {response_text}"
             ) from e
 
     @staticmethod
