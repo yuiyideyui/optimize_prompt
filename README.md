@@ -32,6 +32,21 @@
 
 ---
 
+### 3. [Auto Anime Storyboard Pipeline](AutoAnimeStoryboardPipeline.md)
+**自动化动画分镜生成流水线**
+
+- 智能分段生成：自动生成多个 Part（分镜段落）
+- 逐段精修：每个 Part 独立精修，保持前后连贯性
+- 上下文记忆：支持历史分镜续写，无缝衔接剧情
+- 渐进式总结：自动生成和演进剧情摘要，支持超长故事创作
+- 多模态输入：支持参考图片和音频素材引用
+- 格式严格：强制遵守 Markdown Part 格式和素材编号规则
+
+**分类**: `LLM/Anime`  
+**[查看详细文档 →](AutoAnimeStoryboardPipeline.md)**
+
+---
+
 ## 快速开始
 
 1. 将此文件夹放入 ComfyUI 的 `custom_nodes` 目录
