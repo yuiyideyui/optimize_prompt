@@ -1,7 +1,9 @@
 import base64
 import io
 import json
+import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,8 +13,24 @@ from .utils.network_retry import retry_on_network_error
 from .utils.video_processor import VideoProcessor
 
 
+def _debug(message):
+    """Print a flushed diagnostic line without exposing credentials."""
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[GeminiVideoInspector {timestamp}] {message}", flush=True)
+
+
+def _safe_endpoint(url):
+    """Return an endpoint description without query parameters such as API keys."""
+    parsed = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
 @retry_on_network_error(max_retries=4, retry_delay=60)
 def _post_json(url, headers, payload, timeout):
+    _debug(
+        f"HTTP POST start: endpoint={_safe_endpoint(url)}, "
+        f"timeout={timeout}s, payload_bytes={len(json.dumps(payload).encode('utf-8'))}"
+    )
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -23,6 +41,10 @@ def _post_json(url, headers, payload, timeout):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_body = response.read().decode("utf-8")
+            _debug(
+                f"HTTP POST complete: endpoint={_safe_endpoint(url)}, "
+                f"status={response.status}, response_bytes={len(response_body.encode('utf-8'))}"
+            )
     except urllib.error.HTTPError as error:
         response_body = error.read().decode("utf-8", errors="replace")
         try:
@@ -45,7 +67,36 @@ def _image_parts(images):
 
     parts = []
     for image in images:
-        image = image.detach().cpu().clamp(0, 1).mul(255).byte().numpy()
+        if hasattr(image, "detach"):
+            image = image.detach().cpu()
+        if hasattr(image, "numpy"):
+            image = image.numpy()
+        if not hasattr(image, "dtype"):
+            import numpy as np
+            image = np.asarray(image)
+
+        import numpy as np
+        if image.ndim == 2:
+            image = np.repeat(image[:, :, None], 3, axis=2)
+        elif (
+            image.ndim == 3
+            and image.shape[0] in (1, 3, 4)
+            and image.shape[-1] not in (1, 3, 4)
+        ):
+            image = image.transpose(1, 2, 0)
+
+        if image.ndim != 3:
+            raise ValueError(f"Unsupported image shape: {image.shape}")
+        if image.shape[-1] == 1:
+            image = np.repeat(image, 3, axis=2)
+        elif image.shape[-1] == 4:
+            image = image[:, :, :3]
+        elif image.shape[-1] != 3:
+            raise ValueError(f"Unsupported image shape: {image.shape}")
+
+        if np.issubdtype(image.dtype, np.floating):
+            image = np.clip(image, 0, 1) * 255
+        image = np.clip(image, 0, 255).astype(np.uint8)
         png = io.BytesIO()
         Image.fromarray(image, mode="RGB").save(png, format="PNG")
         parts.append(base64.b64encode(png.getvalue()).decode("ascii"))
@@ -57,14 +108,63 @@ def _gemini_url(base_url, model, api_key):
     if base_url.endswith(":generateContent"):
         url = base_url
     else:
-        if base_url.endswith("/v1beta") or base_url.endswith("/v1"):
-            api_root = base_url
-        else:
-            api_root = f"{base_url}/v1beta"
+        api_root = _gemini_api_root(base_url)
         url = f"{api_root}/models/{urllib.parse.quote(model, safe='')}:generateContent"
 
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}{urllib.parse.urlencode({'key': api_key})}"
+
+
+def _gemini_api_root(base_url):
+    """Return the REST API root used by Gemini generateContent and Files API."""
+    base_url = base_url.strip().rstrip("/")
+    if base_url.endswith("/v1beta") or base_url.endswith("/v1"):
+        return base_url
+    return f"{base_url}/v1beta"
+
+
+def _gemini_upload_url(base_url, api_key):
+    """Build the upload endpoint matching the configured Gemini API root."""
+    api_root = _gemini_api_root(base_url)
+    parsed = urllib.parse.urlsplit(api_root)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1beta"):
+        path = f"{path[:-len('/v1beta')]}/upload/v1beta"
+    elif path.endswith("/v1"):
+        path = f"{path[:-len('/v1')]}/upload/v1"
+    else:
+        path = f"{path}/upload/v1beta"
+
+    upload_base = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )
+    separator = "&" if "?" in upload_base else "?"
+    return f"{upload_base}/files{separator}{urllib.parse.urlencode({'key': api_key})}"
+
+
+def _read_json_response(response):
+    body = response.read().decode("utf-8", errors="replace")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"API returned invalid JSON: {body[:500]}") from error
+
+
+def _get_json(url, timeout):
+    _debug(f"HTTP GET start: endpoint={_safe_endpoint(url)}, timeout={timeout}s")
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = _read_json_response(response)
+            _debug(f"HTTP GET complete: endpoint={_safe_endpoint(url)}, status={response.status}")
+            return result
+    except urllib.error.HTTPError as error:
+        response_body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"API request failed ({error.code}): {response_body[:500]}"
+        ) from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"API request failed: {error.reason}") from error
 
 
 def _gemini_text(response):
@@ -161,6 +261,10 @@ class GeminiVideoInspector:
         prev_h3_optimize_prompt=None,
         prev_distilled_meta_prompt=None,
     ):
+        _debug(
+            f"inspect start: provider={provider}, model={model_name}, "
+            f"timeout={timeout}s, has_video={video is not None}, has_images={images is not None}"
+        )
         api_key = api_key.strip()
         model_name = model_name.strip()
         if not api_key:
@@ -174,29 +278,64 @@ class GeminiVideoInspector:
 
         # 处理视频或图像输入
         video_file = None
+        video_file_is_temporary = False
         audio_data = None
 
         if video is not None:
-            # 视频输入：提取所有帧和音频，合并为视频文件
-            if isinstance(video, dict):
+            # 视频输入。对于已有文件，直接上传原文件，避免重复编码和整段解码。
+            if isinstance(video, (str, os.PathLike)):
+                video = os.fspath(video)
+                if os.path.isfile(video):
+                    selected_images = None
+                    video_file = video
+                    actual_frame_count = VideoProcessor.get_frame_count(video) or None
+                    _debug(
+                        f"input video path accepted: path={video}, "
+                        f"size={os.path.getsize(video)} bytes, frame_count={actual_frame_count}"
+                    )
+                else:
+                    raise ValueError(f"Video file not found: {video}")
+            elif isinstance(video, dict):
                 # 如果是字典格式，获取帧数据和音频
-                selected_images = video.get("frames", video)
+                selected_images = video.get("frames")
+                if selected_images is None:
+                    selected_images = video.get("images")
+                if selected_images is None:
+                    raise ValueError("Video dictionary must contain 'frames' or 'images'")
                 audio_data = video.get("audio")
+                _debug("input video dict received; converting frames to temporary MP4")
+                video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+                video_file_is_temporary = True
             elif hasattr(video, "get_components"):
                 # VideoFromComponents 对象：调用 get_components() 获取 VideoComponents
                 components = video.get_components()
                 selected_images = components.images
                 audio_data = components.audio
+                _debug(
+                    f"VideoFromComponents received: frames_shape={getattr(selected_images, 'shape', None)}, "
+                    f"has_audio={audio_data is not None}"
+                )
+                video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+                video_file_is_temporary = True
             elif hasattr(video, "frames"):
                 # 如果有 frames 属性，使用它
                 selected_images = video.frames
                 audio_data = getattr(video, "audio", None)
+                _debug("video object with frames attribute received; converting to temporary MP4")
+                video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+                video_file_is_temporary = True
             else:
+                # 假设是帧数据
                 selected_images = video
                 audio_data = None
+                _debug("raw frame input received; converting to temporary MP4")
+                video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+                video_file_is_temporary = True
 
             # 计算实际帧数
-            if isinstance(selected_images, (list, tuple)):
+            if selected_images is None:
+                actual_frame_count = actual_frame_count or None
+            elif isinstance(selected_images, (list, tuple)):
                 actual_frame_count = len(selected_images)
             elif hasattr(selected_images, "__len__"):
                 actual_frame_count = len(selected_images)
@@ -204,8 +343,10 @@ class GeminiVideoInspector:
                 actual_frame_count = selected_images.shape[0] if hasattr(selected_images, "shape") else 1
 
             actual_select_every_nth = 1
-            # 合并视频帧和音频为文件
-            video_file = VideoProcessor.frames_to_video(selected_images, audio_data=audio_data)
+            _debug(
+                f"video input ready: file={video_file}, temporary={video_file_is_temporary}, "
+                f"frame_count={actual_frame_count}"
+            )
 
         elif images is not None:
             # 图像输入：使用原有逻辑
@@ -217,10 +358,19 @@ class GeminiVideoInspector:
                 selected_images = images[::select_every_nth]
             else:
                 selected_images = images
+            _debug(
+                f"image input ready: original_count={actual_frame_count}, "
+                f"selected_count={len(selected_images)}, every_nth={select_every_nth}"
+            )
         else:
             raise ValueError("images 或 video 必须提供其中之一")
 
-        if video_file:
+        # Gemini 可以直接理解视频文件；其它提供商则退化为逐帧图片输入。
+        if video_file and provider != "gemini":
+            if selected_images is None:
+                selected_images = VideoProcessor.extract_frames_from_video(video_file)
+            image_data = _image_parts(selected_images)
+        elif video_file:
             # 视频模式：已创建视频文件，稍后用文件上传
             image_data = None
         else:
@@ -240,35 +390,35 @@ class GeminiVideoInspector:
             prev_h3_optimize_prompt,
             prev_distilled_meta_prompt,
         )
+        _debug(
+            f"prompt ready: prompt_chars={len(system_prompt)}, "
+            f"image_parts={len(image_data) if image_data else 0}, video_file={video_file is not None}"
+        )
 
         try:
             if video_file:
-                # 视频模式：使用视频文件上传
-                response_text = self._call_gemini_video(
-                    base_url, model_name, api_key, system_prompt, video_file,
-                    temperature, max_tokens, timeout
-                )
-            else:
-                # 图像模式：使用原有逻辑
-                if provider == "gemini":
-                    response_text = self._call_gemini(
-                        base_url, model_name, api_key, system_prompt, image_data,
-                        temperature, max_tokens, timeout
-                    )
-                elif provider == "openai":
-                    response_text = self._call_openai(
-                        base_url, model_name, api_key, system_prompt, image_data,
-                        temperature, max_tokens, timeout
-                    )
-                elif provider == "claude":
-                    response_text = self._call_claude(
-                        base_url, model_name, api_key, system_prompt, image_data,
-                        temperature, max_tokens, timeout
+                if provider != "gemini":
+                    _debug(f"calling {provider} with extracted image parts")
+                    response_text = self._call_provider(
+                        provider, base_url, model_name, api_key, system_prompt,
+                        image_data, temperature, max_tokens, timeout
                     )
                 else:
-                    raise ValueError(f"Unsupported provider: {provider}")
+                    _debug("calling Gemini video path")
+                    response_text = self._call_gemini_video(
+                        base_url, model_name, api_key, system_prompt, video_file,
+                        temperature, max_tokens, timeout
+                    )
+            else:
+                # 图像模式：使用原有逻辑
+                _debug(f"calling {provider} image path")
+                response_text = self._call_provider(
+                    provider, base_url, model_name, api_key, system_prompt,
+                    image_data, temperature, max_tokens, timeout
+                )
 
             result = self._parse_response(response_text, pass_threshold)
+            _debug(f"model response parsed: score={result['score']}, passed={result['passed']}")
 
             # 智能回退逻辑：当评分下降但并非大幅下降时，保留新的 h3_optimize_prompt 以继续探索
             # 只有在评分显著下降（>1.5分）时才回退到旧的 system prompt
@@ -308,40 +458,110 @@ class GeminiVideoInspector:
                 result["distilled_meta_prompt"],
             )
         finally:
-            # 清理临时视频文件
-            if video_file:
+            # 只清理本节点创建的临时视频，不能删除用户传入的原视频。
+            if video_file and video_file_is_temporary:
+                _debug(f"cleaning temporary video: {video_file}")
                 VideoProcessor.cleanup(video_file)
+
+    @staticmethod
+    def _call_provider(
+        provider, base_url, model_name, api_key, system_prompt, image_data,
+        temperature, max_tokens, timeout,
+    ):
+        _debug(f"provider dispatch: provider={provider}, image_parts={len(image_data or [])}")
+        if provider == "gemini":
+            return GeminiVideoInspector._call_gemini(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout,
+            )
+        if provider == "openai":
+            return GeminiVideoInspector._call_openai(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout,
+            )
+        if provider == "claude":
+            return GeminiVideoInspector._call_claude(
+                base_url, model_name, api_key, system_prompt, image_data,
+                temperature, max_tokens, timeout,
+            )
+        raise ValueError(f"Unsupported provider: {provider}")
 
     @staticmethod
     def _call_gemini_video(base_url, model_name, api_key, system_prompt, video_path,
                            temperature, max_tokens, timeout):
-        """上传视频文件到 Gemini API"""
+        """Upload a video through Gemini's resumable Files API and inspect it."""
+        _debug(f"video upload: reading file={video_path}")
         with open(video_path, "rb") as f:
             video_data = f.read()
+        _debug(f"video upload: file read complete, bytes={len(video_data)}")
 
-        upload_url = f"{base_url.rstrip('/')}/upload/sessions?key={api_key}"
-        boundary = "===============VideoUpload=="
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="video.mp4"\r\n'
-            f"Content-Type: video/mp4\r\n"
-            f"\r\n"
-        ).encode() + video_data + f"\r\n--{boundary}--\r\n".encode()
-
-        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-
-        upload_request = urllib.request.Request(
-            upload_url, data=body, headers=headers, method="POST"
-        )
+        mime_type = "video/mp4"
+        upload_url = _gemini_upload_url(base_url, api_key)
+        start_headers = {
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(len(video_data)),
+            "X-Goog-Upload-Header-Content-Type": mime_type,
+            "Content-Type": "application/json",
+        }
+        start_payload = json.dumps({
+            "file": {"display_name": os.path.basename(video_path) or "video.mp4"}
+        }).encode("utf-8")
 
         try:
+            _debug(f"video upload: start request -> {_safe_endpoint(upload_url)}")
+            start_request = urllib.request.Request(
+                upload_url, data=start_payload, headers=start_headers, method="POST"
+            )
+            with urllib.request.urlopen(start_request, timeout=timeout) as response:
+                session_url = response.headers.get("X-Goog-Upload-URL")
+                _debug(
+                    f"video upload: start response status={response.status}, "
+                    f"session_url_received={bool(session_url)}"
+                )
+                if not session_url:
+                    raise RuntimeError(
+                        "Gemini upload did not return X-Goog-Upload-URL"
+                    )
+
+            upload_request = urllib.request.Request(
+                session_url,
+                data=video_data,
+                headers={
+                    "Content-Length": str(len(video_data)),
+                    "X-Goog-Upload-Offset": "0",
+                    "X-Goog-Upload-Command": "upload, finalize",
+                    "Content-Type": mime_type,
+                },
+                method="POST",
+            )
+            _debug(f"video upload: uploading {len(video_data)} bytes to upload session")
             with urllib.request.urlopen(upload_request, timeout=timeout) as response:
-                upload_result = json.loads(response.read().decode("utf-8"))
-                file_uri = upload_result.get("file", {}).get("uri")
-                if not file_uri:
-                    raise RuntimeError(f"Upload response invalid: {upload_result}")
+                upload_result = _read_json_response(response)
+                _debug(f"video upload: finalize complete, status={response.status}")
         except urllib.error.HTTPError as error:
-            raise RuntimeError(f"Video upload failed ({error.code})") from error
+            response_body = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Video upload failed ({error.code}): {response_body[:500]}"
+            ) from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"Video upload failed: {error.reason}") from error
+
+        file_info = upload_result.get("file") or {}
+        file_name = file_info.get("name")
+        _debug(
+            f"video upload: file created, name={file_name}, "
+            f"state={file_info.get('state')}, has_uri={bool(file_info.get('uri'))}"
+        )
+        if not file_name:
+            raise RuntimeError(f"Upload response missing file name: {upload_result}")
+
+        file_info = GeminiVideoInspector._wait_for_gemini_file(
+            base_url, api_key, file_name, file_info, timeout
+        )
+        file_uri = file_info.get("uri")
+        if not file_uri:
+            raise RuntimeError(f"Gemini file response missing URI: {file_info}")
 
         parts = [
             {"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}},
@@ -357,8 +577,45 @@ class GeminiVideoInspector:
             },
         }
 
+        _debug(
+            f"Gemini generateContent start: model={model_name}, "
+            f"video_uri_present={bool(file_uri)}, prompt_chars={len(system_prompt)}, "
+            f"timeout={timeout}s"
+        )
         response = _post_json(_gemini_url(base_url, model_name, api_key), {}, payload, timeout)
-        return _gemini_text(response)
+        text = _gemini_text(response)
+        _debug(f"Gemini generateContent complete: response_text_chars={len(text)}")
+        return text
+
+    @staticmethod
+    def _wait_for_gemini_file(base_url, api_key, file_name, file_info, timeout):
+        """Wait until an uploaded video is ACTIVE before calling generateContent."""
+        state = file_info.get("state")
+        if state in (None, "ACTIVE"):
+            _debug(f"Gemini file ready immediately: name={file_name}, state={state or 'unknown'}")
+            return file_info
+
+        _debug(f"Gemini file processing wait: name={file_name}, initial_state={state}")
+
+        deadline = time.monotonic() + timeout
+        file_url = (
+            f"{_gemini_api_root(base_url)}/{file_name.lstrip('/')}"
+            f"?{urllib.parse.urlencode({'key': api_key})}"
+        )
+        while time.monotonic() < deadline:
+            time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+            file_info = _get_json(file_url, timeout)
+            state = file_info.get("state")
+            _debug(f"Gemini file processing state: name={file_name}, state={state}")
+            if state == "ACTIVE":
+                _debug(f"Gemini file processing complete: name={file_name}")
+                return file_info
+            if state == "FAILED":
+                raise RuntimeError(f"Gemini video processing failed: {file_info}")
+
+        raise TimeoutError(
+            f"Timed out waiting for Gemini to process video file {file_name}"
+        )
 
     @staticmethod
     def _call_gemini(base_url, model_name, api_key, system_prompt, image_data,
@@ -520,8 +777,8 @@ class GeminiVideoInspector:
 
         # 添加视频帧信息
         frame_info = f"\n\n## 视频帧信息\n"
-        frame_info += f"- 当前提供的帧数: {num_frames}\n"
-        if total_frame_count is not None:
+        frame_info += f"- 当前提供的帧数: {num_frames if num_frames is not None else '未知（视频文件直接上传）'}\n"
+        if total_frame_count is not None and total_frame_count > 0:
             frame_info += f"- 原始视频总帧数: {total_frame_count}\n"
             frame_info += f"- 采样间隔: 每 {select_every_nth} 帧提取 1 帧\n"
             coverage_percent = (num_frames * select_every_nth / total_frame_count) * 100
