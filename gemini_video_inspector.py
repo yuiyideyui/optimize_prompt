@@ -182,6 +182,11 @@ class GeminiVideoInspector:
                 # 如果是字典格式，获取帧数据和音频
                 selected_images = video.get("frames", video)
                 audio_data = video.get("audio")
+            elif hasattr(video, "get_components"):
+                # VideoFromComponents 对象：调用 get_components() 获取 VideoComponents
+                components = video.get_components()
+                selected_images = components.images
+                audio_data = components.audio
             elif hasattr(video, "frames"):
                 # 如果有 frames 属性，使用它
                 selected_images = video.frames
@@ -356,6 +361,7 @@ class GeminiVideoInspector:
         return _gemini_text(response)
 
     @staticmethod
+    def _call_gemini(base_url, model_name, api_key, system_prompt, image_data,
                      temperature, max_tokens, timeout):
         parts = []
         parts.extend(
