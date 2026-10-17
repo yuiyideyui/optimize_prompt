@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -23,6 +24,48 @@ def _safe_endpoint(url):
     """Return an endpoint description without query parameters such as API keys."""
     parsed = urllib.parse.urlsplit(url)
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+_NETWORK_MAX_ATTEMPTS = 4
+_NETWORK_RETRY_DELAY = 5
+_RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
+def _is_retryable_network_error(error):
+    """Return whether an error is likely caused by a temporary network problem."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in _RETRYABLE_HTTP_STATUS_CODES
+    if isinstance(error, (urllib.error.URLError, TimeoutError, TimeoutError)):
+        return True
+    if isinstance(
+        error,
+        (ConnectionError, ConnectionResetError, ConnectionAbortedError,
+         BrokenPipeError, ssl.SSLError),
+    ):
+        return True
+    return False
+
+
+def _run_with_network_retry(operation_name, operation, max_attempts=_NETWORK_MAX_ATTEMPTS,
+                            retry_delay=_NETWORK_RETRY_DELAY):
+    """Run a network operation with bounded retries and visible diagnostics."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return operation()
+        except Exception as error:
+            if not _is_retryable_network_error(error) or attempt >= max_attempts:
+                _debug(
+                    f"{operation_name} failed permanently after {attempt}/{max_attempts}: "
+                    f"{type(error).__name__}: {error}"
+                )
+                raise
+
+            delay = min(retry_delay * (2 ** (attempt - 1)), 30)
+            _debug(
+                f"{operation_name} network error on attempt {attempt}/{max_attempts}: "
+                f"{type(error).__name__}: {error}; retrying in {delay}s"
+            )
+            time.sleep(delay)
 
 
 @retry_on_network_error(max_retries=4, retry_delay=60)
@@ -509,36 +552,17 @@ class GeminiVideoInspector:
         }).encode("utf-8")
 
         try:
-            _debug(f"video upload: start request -> {_safe_endpoint(upload_url)}")
-            start_request = urllib.request.Request(
-                upload_url, data=start_payload, headers=start_headers, method="POST"
+            upload_result = _run_with_network_retry(
+                "Gemini video upload",
+                lambda: GeminiVideoInspector._upload_video_once(
+                    upload_url,
+                    start_headers,
+                    start_payload,
+                    video_data,
+                    mime_type,
+                    timeout,
+                ),
             )
-            with urllib.request.urlopen(start_request, timeout=timeout) as response:
-                session_url = response.headers.get("X-Goog-Upload-URL")
-                _debug(
-                    f"video upload: start response status={response.status}, "
-                    f"session_url_received={bool(session_url)}"
-                )
-                if not session_url:
-                    raise RuntimeError(
-                        "Gemini upload did not return X-Goog-Upload-URL"
-                    )
-
-            upload_request = urllib.request.Request(
-                session_url,
-                data=video_data,
-                headers={
-                    "Content-Length": str(len(video_data)),
-                    "X-Goog-Upload-Offset": "0",
-                    "X-Goog-Upload-Command": "upload, finalize",
-                    "Content-Type": mime_type,
-                },
-                method="POST",
-            )
-            _debug(f"video upload: uploading {len(video_data)} bytes to upload session")
-            with urllib.request.urlopen(upload_request, timeout=timeout) as response:
-                upload_result = _read_json_response(response)
-                _debug(f"video upload: finalize complete, status={response.status}")
         except urllib.error.HTTPError as error:
             response_body = error.read().decode("utf-8", errors="replace")
             raise RuntimeError(
@@ -586,6 +610,46 @@ class GeminiVideoInspector:
         text = _gemini_text(response)
         _debug(f"Gemini generateContent complete: response_text_chars={len(text)}")
         return text
+
+    @staticmethod
+    def _upload_video_once(upload_url, start_headers, start_payload, video_data,
+                           mime_type, timeout):
+        """Perform one complete resumable upload attempt."""
+        _debug(f"video upload: start request -> {_safe_endpoint(upload_url)}")
+        start_request = urllib.request.Request(
+            upload_url, data=start_payload, headers=start_headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(start_request, timeout=timeout) as response:
+                session_url = response.headers.get("X-Goog-Upload-URL")
+                _debug(
+                    f"video upload: start response status={response.status}, "
+                    f"session_url_received={bool(session_url)}"
+                )
+                if not session_url:
+                    raise RuntimeError(
+                        "Gemini upload did not return X-Goog-Upload-URL"
+                    )
+
+            upload_request = urllib.request.Request(
+                session_url,
+                data=video_data,
+                headers={
+                    "Content-Length": str(len(video_data)),
+                    "X-Goog-Upload-Offset": "0",
+                    "X-Goog-Upload-Command": "upload, finalize",
+                    "Content-Type": mime_type,
+                },
+                method="POST",
+            )
+            _debug(f"video upload: uploading {len(video_data)} bytes to upload session")
+            with urllib.request.urlopen(upload_request, timeout=timeout) as response:
+                upload_result = _read_json_response(response)
+                _debug(f"video upload: finalize complete, status={response.status}")
+                return upload_result
+        except Exception as e:
+            _debug(f"video upload failed: {type(e).__name__}: {e}")
+            raise
 
     @staticmethod
     def _wait_for_gemini_file(base_url, api_key, file_name, file_info, timeout):

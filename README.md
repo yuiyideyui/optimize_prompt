@@ -74,6 +74,20 @@
 
 ---
 
+### 6. [VideoProcessor](utils/VideoProcessor.md)
+**视频处理工具模块**
+
+- 支持将图像帧合并为视频文件
+- 支持添加音频轨道或从视频提取音频
+- 自动编码器选择和临时文件管理
+- 灵活的输入格式支持（张量、数组、列表）
+- 完整的视频解析和元数据提取
+
+**类型**: 内部工具模块  
+**[查看详细文档 →](utils/VideoProcessor.md)**
+
+---
+
 ## 快速开始
 
 1. 将此文件夹放入 ComfyUI 的 `custom_nodes` 目录
@@ -90,13 +104,17 @@ my_comfyui/
 ├── gemini_claude_text.py            # 文本生成节点实现
 ├── gemini_video_inspector.py        # 视频质检节点实现
 ├── anime_pipeline/                  # 动画分镜管线
+│   ├── __init__.py
 │   ├── AutoAnimeStoryboardPipeline.py
 │   └── prompts.py
 ├── utils/                           # 工具节点和模块
+│   ├── __init__.py                  # 工具模块入口
 │   ├── image_counter.py             # 图像计数节点实现
-│   ├── network_retry.py             # 网络重试工具（新增）
+│   ├── network_retry.py             # 网络重试工具
+│   ├── video_processor.py           # 视频处理工具
 │   ├── ImageCounter.md              # 图像计数节点文档
-│   └── NetworkRetry.md              # 网络重试工具文档（新增）
+│   ├── NetworkRetry.md              # 网络重试工具文档
+│   └── VideoProcessor.md            # 视频处理工具文档
 ├── README.md                        # 项目主文档（当前文件）
 ├── gemini_claude_text.md            # 文本生成节点详细文档
 ├── gemini_video_inspector.md        # 视频质检节点详细文档
@@ -105,38 +123,219 @@ my_comfyui/
 
 ## 依赖要求
 
+### 核心依赖
 - Python 3.8+
 - ComfyUI
 - Pillow (PIL)
-- 标准库: `json`, `urllib`, `base64`, `io`
+- NumPy
+- 标准库: `json`, `urllib`, `base64`, `io`, `time`
+
+### 节点特定依赖
+
+#### 文本生成节点 (Gemini / Claude Text)
+- `requests` — HTTP 请求库
+- Google API 密钥（Gemini）或 Anthropic API 密钥（Claude）
+
+#### 视频质检节点 (Gemini Video Inspector)
+- `requests` — HTTP 请求库
+- Google API 密钥（Gemini）
+- OpenCV (`cv2`) — 用于视频帧提取
+
+#### 动画分镜管线 (Auto Anime Storyboard Pipeline)
+- `requests` — HTTP 请求库
+- Google API 密钥（Gemini）或 Anthropic API 密钥（Claude）
+
+#### 视频处理工具 (VideoProcessor)
+- **必需**: FFmpeg（系统级，不是 Python 包）
+- **可选**: 
+  - OpenCV (`cv2`) — 用于帧提取和视频解析
+  - `soundfile` 或 `librosa` — 用于音频提取
+
+### 安装步骤
+
+#### 1. 安装 FFmpeg（必需）
+
+**Windows**:
+```bash
+# 使用 Chocolatey
+choco install ffmpeg
+
+# 或使用 winget
+winget install FFmpeg
+
+# 或手动下载：https://ffmpeg.org/download.html
+```
+
+**macOS**:
+```bash
+brew install ffmpeg
+```
+
+**Linux (Ubuntu/Debian)**:
+```bash
+sudo apt-get update
+sudo apt-get install ffmpeg
+```
+
+验证安装：
+```bash
+ffmpeg -version
+```
+
+#### 2. 安装 Python 依赖
+
+在 ComfyUI 根目录或虚拟环境中运行：
+```bash
+# 基础依赖
+pip install pillow numpy requests
+
+# 视频处理依赖（推荐）
+pip install opencv-python soundfile
+
+# 或使用 librosa（音频处理替代方案）
+pip install librosa
+```
+
+#### 3. 配置 API 密钥
+
+**方法 A: 环境变量**
+```bash
+# Windows (PowerShell)
+$env:GEMINI_API_KEY = "your_gemini_key"
+$env:CLAUDE_API_KEY = "your_claude_key"
+
+# Linux/macOS
+export GEMINI_API_KEY="your_gemini_key"
+export CLAUDE_API_KEY="your_claude_key"
+```
+
+**方法 B: ComfyUI 环境配置**
+- 在 ComfyUI web 界面中配置 API 密钥（通过节点参数）
+- 每次使用节点时填入密钥
+
+**方法 C: 配置文件**
+- 在项目目录创建 `.env` 文件（如果节点支持）
+```
+GEMINI_API_KEY=your_gemini_key
+CLAUDE_API_KEY=your_claude_key
+```
 
 ## API 密钥获取
 
 ### Gemini API
-访问 [Google AI Studio](https://makersuite.google.com/app/apikey) 获取免费 API 密钥。
+1. 访问 [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. 登录 Google 账户（如需创建账户）
+3. 点击 "Create API key"
+4. 选择 "Create API key in new project" 或使用现有项目
+5. 复制 API 密钥
+
+**获取免费额度**: Gemini 提供免费 API 配额，每分钟限制请求数
 
 ### Claude API
-访问 [Anthropic Console](https://console.anthropic.com/) 注册并获取 API 密钥。
+1. 访问 [Anthropic Console](https://console.anthropic.com/)
+2. 创建账户或登录
+3. 导航到 "API Keys" 页面
+4. 点击 "Create Key"
+5. 复制 API 密钥
+
+**计费方式**: Claude API 按使用量计费，查看 [定价页面](https://www.anthropic.com/pricing) 了解详情
 
 ## 常见问题
 
+### 安装与配置
+
 **Q: 节点没有出现在菜单中？**  
-A: 确保文件夹位置正确，重启 ComfyUI。检查控制台是否有报错信息。
+A: 
+1. 确保文件夹位置正确：`ComfyUI/custom_nodes/my_comfyui`
+2. 重启 ComfyUI（完全退出并重新启动）
+3. 检查 ComfyUI 控制台是否有红色错误信息
+4. 确认 Python 版本 ≥ 3.8
+5. 验证依赖是否安装：`pip list | grep -E "pillow|numpy|requests"`
+
+**Q: 导入时出现 "ModuleNotFoundError"？**  
+A: 缺少依赖，运行：
+```bash
+pip install pillow numpy requests
+pip install opencv-python soundfile  # 可选但推荐
+```
+
+**Q: FFmpeg 相关错误？**  
+A: 
+- 确认 FFmpeg 已安装：`ffmpeg -version`
+- 确认 FFmpeg 在系统 PATH 中
+- Windows 用户：重启计算机后系统 PATH 才会更新
+- 重新安装 FFmpeg 到默认位置
+
+### API 和网络
 
 **Q: API 请求超时或网络错误？**  
-A: 所有网络节点已内置自动重试机制（默认：遇到错误后等待 60 秒重试，最多重试 4 次）。如果仍然失败，请检查：
-- 网络连接是否正常
-- API 密钥是否有效
-- 防火墙是否阻止了请求
-- API 服务是否正常运行
+A: 所有网络节点已内置自动重试机制。如果仍然失败：
+- 检查网络连接：`ping www.google.com`
+- 验证 API 密钥是否有效和未过期
+- 检查防火墙是否阻止了请求
+- 确认 API 服务状态：[Gemini 状态](https://status.cloud.google.com/)、[Anthropic 状态](https://www.anthropic.com/)
+- 查看节点输出的完整错误信息
+
+**Q: "Invalid API key" 错误？**  
+A:
+- 确认密钥复制无误（无多余空格或换行）
+- 验证密钥未过期或被撤销
+- 检查环境变量或节点参数中的密钥设置
+- 重新获取新密钥并重试
+
+**Q: 请求配额已满？**  
+A:
+- Gemini：等待配额重置（通常按分钟或天数重置）
+- Claude：检查消费情况，可能需要升级账户或等待下个计费周期
+
+### 视频处理
 
 **Q: 视频质检一直不通过？**  
-A: 降低 `pass_threshold` 阈值，或检查 `evaluation_criteria` 是否过于严格。
+A: 
+- 降低 `pass_threshold` 参数值
+- 检查 `evaluation_criteria` 是否过于严格
+- 尝试增加视频帧数或分辨率
+- 查看详细反馈信息，根据建议调整参数
+
+**Q: 视频生成失败或文件损坏？**  
+A:
+- 确保帧数据格式正确（RGB/RGBA，0-255 或 0-1）
+- 检查所有帧尺寸一致
+- 验证 FFmpeg 版本兼容性：`ffmpeg -codecs | grep h264`
+- 尝试不同编码器（如改用 mpeg4）
+- 检查磁盘空间是否充足
+
+**Q: 音频和视频不同步？**  
+A:
+- 确保 `fps` 和 `sample_rate` 参数正确
+- 验证帧数和音频长度逻辑上匹配
+- 尝试使用标准帧率（24, 25, 30, 60 fps）
+- 使用标准采样率（44100 或 48000 Hz）
+
+### 性能优化
 
 **Q: 成本太高？**  
-A: 使用 flash 模型（如 `gemini-2.0-flash-exp`），减少视频帧数，降低 `max_tokens`。
+A:
+- 使用 flash 模型（如 `gemini-2.0-flash-exp`），成本更低但速度快
+- 减少视频帧数或分辨率
+- 降低 `max_tokens` 参数
+- 复用评分结果，避免重复检验
+
+**Q: 处理速度很慢？**  
+A:
+- 减少输入帧数
+- 降低分辨率
+- 使用更快的编码器
+- 检查系统资源（CPU/GPU 使用率）
+- 分批处理而不是一次处理所有内容
 
 ## 更新日志
+
+### v1.2.0 (2026-10-17)
+- ✨ 新增 VideoProcessor 工具模块：支持帧到视频合并、音频处理、视频解析
+- 📝 完善文档：添加详细的依赖安装指南、API 配置说明、故障排查
+- 🔧 优化 Gemini Video Inspector：支持 VideoFromComponents 对象和音频处理
+- 📚 新增 VideoProcessor.md 详细文档
 
 ### v1.1.0 (2026-10-17)
 - ✨ 新增网络重试机制：所有网络节点支持自动重试（默认 4 次，间隔 60 秒）
@@ -146,16 +345,74 @@ A: 使用 flash 模型（如 `gemini-2.0-flash-exp`），减少视频帧数，�
 ### v1.0.0 (2026-10-17)
 - ✨ 新增 Gemini / Claude Text 节点
 - ✨ 新增 Gemini Video Inspector 节点
+- ✨ 新增 Auto Anime Storyboard Pipeline 节点
 - 📝 完善文档结构
 
 ## 许可证
 
 本项目遵循 MIT 许可证。
 
+## 开发指南
+
+### 本地开发环境
+
+1. **克隆或复制项目**
+```bash
+cd ComfyUI/custom_nodes
+# 复制项目文件夹到此目录
+```
+
+2. **安装开发依赖**
+```bash
+pip install -e .  # 如果有 setup.py
+# 或手动安装所有依赖
+pip install pillow numpy requests opencv-python soundfile
+```
+
+3. **调试模式**
+- ComfyUI 启动时会自动加载 `custom_nodes` 中的模块
+- 修改 Python 文件后通常需要重启 ComfyUI
+- 检查控制台输出获取详细错误信息
+
+### 项目结构说明
+
+- **`__init__.py`**: 节点注册入口，定义 `NODE_CLASS_MAPPINGS` 和 `DISPLAY_NAME_MAPPINGS`
+- **`utils/`**: 可复用工具和公共函数
+- **`anime_pipeline/`**: 特定功能模块（动画分镜）
+- **`*.md`**: 节点和模块文档
+
+### 编码规范
+
+- 遵循 PEP 8 风格指南
+- 添加类型提示（Python 3.8+）
+- 为公共方法添加 docstring
+- 避免全局状态，优先使用类方法
+- 错误处理要明确和有意义
+
+### 测试建议
+
+- 在 ComfyUI 中手动测试新节点
+- 验证输入/输出类型和形状
+- 检查极端情况（空输入、大数据等）
+- 测试网络错误场景
+
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request！
 
+### 提交 Issue
+- 清楚描述问题和复现步骤
+- 附加错误日志和系统信息
+- 说明使用的节点和参数
+
+### 提交 PR
+- 从 `main` 分支创建特性分支
+- 保持提交记录清晰
+- 更新相关文档
+- 添加必要的测试
+
 ---
 
 **提示**: 点击每个节点标题查看详细的使用文档和示例。
+
+**最后更新**: 2026-10-17
