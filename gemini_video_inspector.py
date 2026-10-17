@@ -114,19 +114,23 @@ class GeminiVideoInspector:
                 "timeout": ("INT", {"default": 120, "min": 1, "max": 600}),
             },
             "optional": {
+                "frame_count": ("INT", {"forceInput": True}),
+                "select_every_nth": ("INT", {"default": 1, "min": 1}),
                 "prev_score": ("FLOAT",),
                 "prev_feedback": ("STRING", {"forceInput": True}),
                 "prev_h3_optimize_prompt": ("STRING", {"forceInput": True}),
+                "prev_distilled_meta_prompt": ("STRING", {"forceInput": True}),
             },
         }
 
-    RETURN_TYPES = ("BOOLEAN", "FLOAT", "STRING", "STRING", "STRING")
+    RETURN_TYPES = ("BOOLEAN", "FLOAT", "STRING", "STRING", "STRING", "STRING")
     RETURN_NAMES = (
         "passed",
         "score",
         "feedback",
         "log_text",
         "h3_optimize_prompt",
+        "distilled_meta_prompt",
     )
     FUNCTION = "inspect"
     CATEGORY = "my_comfyui/AI"
@@ -144,9 +148,12 @@ class GeminiVideoInspector:
         max_tokens,
         pass_threshold,
         timeout,
+        frame_count=None,
+        select_every_nth=1,
         prev_score=None,
         prev_feedback=None,
         prev_h3_optimize_prompt=None,
+        prev_distilled_meta_prompt=None,
     ):
         api_key = api_key.strip()
         model_name = model_name.strip()
@@ -159,16 +166,30 @@ class GeminiVideoInspector:
         if not evaluation_criteria.strip():
             raise ValueError("evaluation_criteria cannot be empty")
 
-        image_data = _image_parts(images)
+        # 根据 select_every_nth 筛选图片
+        if select_every_nth > 1:
+            selected_images = images[::select_every_nth]
+        else:
+            selected_images = images
+
+        # 如果没有提供 frame_count，使用输入图片的总数
+        if frame_count is None:
+            frame_count = len(images)
+
+        image_data = _image_parts(selected_images)
         if not image_data:
             raise ValueError("images cannot be empty")
 
         system_prompt = self._build_system_prompt(
             user_prompt,
             evaluation_criteria,
+            len(image_data),
+            frame_count,
+            select_every_nth,
             prev_score,
             prev_feedback,
             prev_h3_optimize_prompt,
+            prev_distilled_meta_prompt,
         )
 
         if provider == "gemini":
@@ -190,13 +211,31 @@ class GeminiVideoInspector:
             raise ValueError(f"Unsupported provider: {provider}")
 
         result = self._parse_response(response_text, pass_threshold)
+
+        # 智能回退逻辑：当评分下降但并非大幅下降时，保留新的 h3_optimize_prompt 以继续探索
+        # 只有在评分显著下降（>1.5分）时才回退到旧的 system prompt
         if (
             prev_score is not None
-            and prev_score > result["score"]
             and prev_h3_optimize_prompt
             and prev_h3_optimize_prompt.strip()
         ):
-            result["h3_optimize_prompt"] = prev_h3_optimize_prompt
+            score_drop = prev_score - result["score"]
+            if score_drop > 1.5:
+                # 评分显著下降，回退到上一轮的 system prompt
+                result["h3_optimize_prompt"] = prev_h3_optimize_prompt
+                result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，已回退到上一轮的优化策略。"
+            elif score_drop > 0:
+                # 评分轻微下降，在 feedback 中提示但保留新的探索方向
+                result["feedback"] += f"\n\n[系统提示] 本轮评分下降 {score_drop:.2f} 分，但保留新的优化策略继续探索。如果下一轮继续下降，建议回顾历史策略。"
+
+        # distilled_meta_prompt 回退逻辑：只在评分显著上升时更新
+        if prev_distilled_meta_prompt and prev_distilled_meta_prompt.strip():
+            if prev_score is None or result["score"] >= prev_score + 0.5:
+                # 首次运行或评分显著提升，使用新的 distilled_meta_prompt
+                pass
+            else:
+                # 评分未显著提升，保留旧的 distilled_meta_prompt
+                result["distilled_meta_prompt"] = prev_distilled_meta_prompt
 
         log_text = self._format_log(
             system_prompt, response_text, result, pass_threshold
@@ -208,6 +247,7 @@ class GeminiVideoInspector:
             result["feedback"],
             log_text,
             result["h3_optimize_prompt"],
+            result["distilled_meta_prompt"],
         )
 
     @staticmethod
@@ -325,9 +365,13 @@ class GeminiVideoInspector:
     def _build_system_prompt(
         user_prompt,
         evaluation_criteria,
+        num_frames,
+        total_frame_count,
+        select_every_nth,
         prev_score,
         prev_feedback,
         prev_h3_optimize_prompt,
+        prev_distilled_meta_prompt,
     ):
         has_prev = prev_score is not None or (
             prev_feedback is not None and prev_feedback.strip()
@@ -337,21 +381,46 @@ class GeminiVideoInspector:
         )
 
         iteration_info = ""
+        distilled_info = ""
+
         if has_prev:
             iteration_info = "\n\n## 历史迭代信息\n"
             if prev_score is not None:
-                iteration_info += f"- 上一轮评分: {prev_score:.2f}\n"
+                score_value = float(prev_score) if isinstance(prev_score, str) else prev_score
+                iteration_info += f"- 上一轮评分: {score_value:.2f}\n"
             if prev_feedback and prev_feedback.strip():
                 iteration_info += f"- 上一轮修改意见: {prev_feedback}\n"
             if prev_h3_optimize_prompt and prev_h3_optimize_prompt.strip():
-                iteration_info += (
-                    f"- 上一轮优化提示词: {prev_h3_optimize_prompt}\n"
-                )
-            iteration_info += "\n请重点检查本轮输入是否解决了上一轮提出的问题。"
+                iteration_info += f"- 上一轮针对性 system prompt:\n{prev_h3_optimize_prompt}\n"
+
+            iteration_info += "\n### 迭代蒸馏要求\n"
+            iteration_info += "1. **评估上一轮 system prompt 的效果**：分析哪些指导有效、哪些无效\n"
+            iteration_info += "2. **检查本轮是否解决了上一轮提出的问题**\n"
+            iteration_info += "3. **生成改进的 h3_optimize_prompt**：\n"
+            iteration_info += "   - 保留上一轮有效的指导内容\n"
+            iteration_info += "   - 针对本轮视频中**新出现的问题**或**未解决的问题**补充新的指导\n"
+            iteration_info += "   - 移除或修正上一轮无效的指导\n"
+            iteration_info += "   - 确保新的 system prompt 是上一轮的**改进版本**，而不是完全推倒重来\n"
         else:
-            iteration_info = "\n\n这是对该视频的首次检验。"
+            iteration_info = "\n\n这是对该视频的首次检验。请基于本轮视频的问题生成初始的 h3_optimize_prompt。"
+
+        # 添加蒸馏元提示词的历史信息
+        if prev_distilled_meta_prompt and prev_distilled_meta_prompt.strip():
+            distilled_info = f"\n\n## 累积蒸馏的通用规则\n以下是从历史迭代中提炼的通用修改规则：\n{prev_distilled_meta_prompt}\n\n请基于本轮的新发现，更新和补充这些通用规则。"
+
+        # 添加视频帧信息
+        frame_info = f"\n\n## 视频帧信息\n"
+        frame_info += f"- 当前提供的帧数: {num_frames}\n"
+        if total_frame_count is not None:
+            frame_info += f"- 原始视频总帧数: {total_frame_count}\n"
+            frame_info += f"- 采样间隔: 每 {select_every_nth} 帧提取 1 帧\n"
+            coverage_percent = (num_frames * select_every_nth / total_frame_count) * 100
+            frame_info += f"- 帧覆盖率: {coverage_percent:.1f}%\n"
+        else:
+            frame_info += f"- 采样间隔: 每 {select_every_nth} 帧提取 1 帧\n"
 
         prompt = f"""你是一个专业的视频质量检验 AI。你的任务是基于用户的原始提示词和质检要求，对输入的视频帧序列进行评估。
+{frame_info}
 
 ## 原始生成提示词
 {user_prompt}
@@ -359,6 +428,7 @@ class GeminiVideoInspector:
 ## 质检要求
 {evaluation_criteria}
 {iteration_info}
+{distilled_info}
 
 ## 输出要求
 请严格按照以下 JSON 格式输出评估结果：
@@ -367,7 +437,8 @@ class GeminiVideoInspector:
   "score": 浮点数（0-10分），
   "passed": 布尔值（true 或 false），
   "feedback": "详细的评价与建议，如果不通过请明确指出问题所在",
-  "h3_optimize_prompt": "基于原始提示词和本轮反馈改写的、可直接用于下一轮视频生成的完整提示词"
+  "h3_optimize_prompt": "一段用于指导 AI 如何修改 user_prompt 的 system prompt 指令（针对本轮视频的具体问题）",
+  "distilled_meta_prompt": "从多轮迭代中提炼出的通用修改规则（跨任务的元知识）"
 }}
 
 评估维度包括但不限于：
@@ -376,7 +447,73 @@ class GeminiVideoInspector:
 3. 主体符合度（是否符合原始提示词）
 4. 整体协调性
 
-请客观、严谨地给出评分和反馈。优化提示词应保留原始提示词的核心意图，并针对本轮视频暴露的问题进行具体改进；不要只输出修改建议。
+## h3_optimize_prompt 生成规则
+h3_optimize_prompt 是一段 **system prompt**，它会被用于指导另一个 AI 如何修改用户的 user_prompt。
+
+使用场景：
+- system_message = h3_optimize_prompt（你生成的指令）
+- user_message = user_prompt（用户的原始提示词）
+- AI 根据 system_message 的指导来修改 user_message
+
+内容要求：
+1. 这是给 AI 的**修改指令**，不是修改后的结果
+2. 必须要求 AI 保持原始 user_prompt 的格式结构（subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music 等段落标题）
+3. 针对本轮视频暴露的具体问题，明确指出需要在哪些段落进行什么修改
+4. 所有指导必须具体、可操作，例如：
+   - 动作问题 → "在 detailed_description 的 [Shot X] 中，增强角色的手部动作描述，明确手指姿态和移动轨迹"
+   - 画面畸变 → "在 detailed_description 的所有镜头中，添加'固定机位'、'无镜头移动'等稳定性约束"
+   - 主体不符 → "在 subject_definitions 的 <Subject X> 中，补充具体的服装颜色、发型细节"
+
+示例格式：
+"你需要修改用户提供的视频生成提示词，保持其原有的格式结构不变。针对以下问题进行针对性修改：1. 在 detailed_description 的 [Shot 2] 段落中，当前角色的面部表情描述过于简略，请添加眉毛、眼睛、嘴唇的具体变化细节。2. 在 subject_definitions 中，<Subject 1> 的光照描述'明亮、柔和'不够精确，请补充光源方向、阴影特征等信息。"
+
+## distilled_meta_prompt 生成规则
+distilled_meta_prompt 是从多轮迭代中**提炼出的通用规则**，它不针对某个具体视频的问题，而是总结**普遍适用的修改原则**。
+
+与 h3_optimize_prompt 的区别：
+- h3_optimize_prompt：针对本轮视频的具体问题（"在 [Shot 2] 中角色A的手部动作不清晰，请添加..."）
+- distilled_meta_prompt：通用的修改原则（"针对角色动作问题：在 detailed_description 对应镜头中，补充具体的肢体姿态、移动轨迹、表情变化细节"）
+
+生成要求：
+1. **抽象化具体问题为通用规则**：
+   - 具体问题："[Shot 2] 中 Airi 的眉毛动作不清晰" → 通用规则："角色表情描述应包含眉毛、眼睛、嘴唇的具体状态变化"
+   - 具体问题："书桌背景出现畸变" → 通用规则："每个镜头描述必须包含'固定机位'、'无镜头移动'等稳定性约束"
+
+2. **累积有效的修改策略**：
+   - 如果上一轮某个指导有效（评分提升），将其抽象为通用规则加入 distilled_meta_prompt
+   - 如果某个指导无效，不要加入或从 distilled_meta_prompt 中移除
+
+3. **保持结构化和可复用**：
+   - 按问题类型分类（角色动作、画面稳定性、主体特征、时序连贯性等）
+   - 每条规则明确指出"针对什么问题 → 在哪个段落 → 如何修改"
+
+4. **迭代更新而非替换**：
+   - 如果已有 prev_distilled_meta_prompt，基于它进行补充和完善
+   - 保留已验证有效的规则，补充新发现的规则，移除无效规则
+
+示例格式：
+"你需要修改用户提供的视频生成提示词，保持原有的格式结构（subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music）不变。
+
+通用修改规则：
+
+1. **角色动作精确化**
+   - 在 detailed_description 的每个镜头中，补充角色的具体肢体姿态（手部姿势、手指状态、身体角度）
+   - 表情描述必须包含眉毛、眼睛、嘴唇的状态变化和时序
+   - 动作过渡必须明确起止帧和中间状态
+
+2. **画面稳定性约束**
+   - 每个镜头描述必须包含'固定机位'、'无镜头移动'、'无背景漂移'等明确约束
+   - 添加'保持角色边缘、头发、衣物、背景线条跨帧稳定'的描述
+
+3. **主体特征强化**
+   - 在 subject_definitions 中，补充角色的服装颜色、材质、发型细节、面部特征
+   - 补充场景的光照方向、阴影特征、色调信息
+
+4. **时序连贯性保证**
+   - 明确每个镜头的起止时间戳
+   - 添加镜头间的动作衔接描述"
+
+请客观、严谨地给出评分和反馈。
 """
 
         return prompt
@@ -389,6 +526,7 @@ class GeminiVideoInspector:
             passed = bool(data.get("passed", False))
             feedback = str(data.get("feedback", ""))
             h3_optimize_prompt = str(data.get("h3_optimize_prompt") or "")
+            distilled_meta_prompt = str(data.get("distilled_meta_prompt") or "")
 
             if score >= pass_threshold and not passed:
                 passed = True
@@ -400,6 +538,7 @@ class GeminiVideoInspector:
                 "passed": passed,
                 "feedback": feedback,
                 "h3_optimize_prompt": h3_optimize_prompt,
+                "distilled_meta_prompt": distilled_meta_prompt,
             }
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             raise RuntimeError(
