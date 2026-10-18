@@ -869,13 +869,13 @@ class GeminiVideoInspector:
 
 输出结构如下：
 
-{
+{{
   "score": 0.0,
   "passed": false,
   "feedback": "基于实际视频证据的详细评价与问题分析",
   "h3_optimize_prompt": "针对本轮视频问题生成的、用于指导另一个 AI 修改原始 user_prompt 的 system prompt",
   "distilled_meta_prompt": "基于历轮评估结果累积、验证和更新的通用提示词优化规则"
-}
+}}
 
 字段约束：
 

@@ -30,7 +30,7 @@
 | `api_key` | STRING (password) | `""` | Gemini API 密钥，或使用环境变量 `GEMINI_API_KEY` |
 | `model_name` | Combo | `gemini-2.5-flash` | 模型选择：`gemini-3.5-flash-lite`、`gemini-2.5-flash`、`gemini-2.5-pro` |
 | `output_dir` | STRING | `output/anime_storyboard` | 输出目录（相对或绝对路径） |
-| `part_duration` | INT | `7` | 每个 Part 的时长（秒，范围 1-60） |
+| `part_duration` | INT | `7` | 每个 Part 的**最大**时长（秒，范围 1-60），可根据剧情节奏灵活调整，只要不超过此上限 |
 | `max_retries` | INT | `2` | API 调用失败时的最大重试次数（0-5） |
 
 ### 可选参数
@@ -172,7 +172,7 @@ user_prompt:
 ## 注意事项
 
 1. **API 消耗**: 每次运行会调用多次 API（生成 + 每个 Part 精修 + 总结），注意成本控制
-2. **时长一致性**: 所有 Part 的时长必须一致，由 `part_duration` 参数控制
+2. **时长灵活性**: `part_duration` 是每个 Part 的**最大时长**，实际时长可根据剧情需要灵活调整，只要不超过此上限。这样可以在保持总体时长控制的同时，为模型提供更大的创作自由度
 3. **编号连续性**: 系统强制要求 Part 编号连续，不允许跳号或重复
 4. **素材引用**: 必须先在 `user_prompt` 中声明素材，再在实际剧情中引用
 5. **续写机制**: 续写时必须提供 `history_context`，系统会自动计算起始编号

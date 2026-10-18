@@ -176,7 +176,7 @@ class AutoAnimeStoryboardPipeline:
             f"{history_section}\n\n"
             f"{numbering_rule}\n"
             f"{audio_rule}"
-            f"每个Part的时长必须为 {part_duration} 秒。\n"
+            f"每个Part的时长不超过 {part_duration} 秒（可根据剧情节奏灵活调整，只要不超过此上限）。\n"
             "请严格遵守系统提示词中的输出格式和镜头规则。注意动作连贯性与正反打剪辑规范。"
         )
         
@@ -201,7 +201,7 @@ class AutoAnimeStoryboardPipeline:
             refine_prompt = (
                 "精修以下分镜，只修复明确问题，不重写剧情。\n"
                 f"当前处理序号：{index}/{len(parts)}；原始Part编号：{part_number}。\n"
-                f"每个Part必须保持 {part_duration} 秒。\n"
+                f"每个Part时长不超过 {part_duration} 秒（可根据剧情需要灵活调整，只要不超过此上限）。\n"
                 f"本次声明参考图 {reference_count} 张；实际上传 {len(pil_images)} 张。\n"
                 + (f"本次声明音频素材 {audio_count} 个。\n" if audio_count > 0 else "") +
                 "所有图像素材名称必须写成原始的 `<picture number>` 占位符，绝对不要出现任何上一帧图片编号。\n"
