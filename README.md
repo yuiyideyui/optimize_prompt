@@ -395,6 +395,12 @@ A:
 
 ## 更新日志
 
+### v1.7.0 (2026-10-19)
+- ✨ 增强 Auto Anime Storyboard Pipeline：支持 `ref_images_metadata` 参数，与 Director Table 节点无缝集成
+- 🎨 新增 Letterbox 图片恢复功能：自动恢复被 Director Table letterbox 处理的原始尺寸，提升视觉保真度
+- ⚡ 优化性能：参考图片自动压缩至 0.5x 分辨率，加快 API 调用速度
+- 📝 完善 Auto Anime Storyboard Pipeline 文档：添加集成示例和图片处理详细说明
+
 ### v1.6.0 (2026-10-19)
 - ✨ 新增 Director Table (Card Manager) 节点：支持导演卡片表管理和多图像批处理
 - ✨ 新增 Audio Combine (Batch / Concat) 节点：支持音频批处理和时间拼接
@@ -502,4 +508,4 @@ pip install pillow numpy requests opencv-python soundfile
 
 **提示**: 点击每个节点标题查看详细的使用文档和示例。
 
-**最后更新**: 2026-10-18
+**最后更新**: 2026-10-19

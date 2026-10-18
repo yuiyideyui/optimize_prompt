@@ -41,6 +41,7 @@ class AutoAnimeStoryboardPipeline:
             },
             "optional": {
                 "images": ("IMAGE",),
+                "ref_images_metadata": ("STRING", {"multiline": False}),
                 "history_context": ("STRING", {"multiline": True, "default": ""}),
                 "previous_summary": ("STRING", {"multiline": True, "default": ""}),
             }
@@ -68,19 +69,98 @@ class AutoAnimeStoryboardPipeline:
         return parts
 
     @staticmethod
-    def _images_to_pil(images):
+    def _restore_letterboxed_batch(batch, metadata):
+        """Restore original images from letterboxed batch using metadata.
+        If restoration fails (e.g., due to size mismatch), return original batch."""
+        if metadata is None or not isinstance(metadata, str) or not metadata.strip():
+            return batch
+
+        try:
+            data = json.loads(metadata)
+        except json.JSONDecodeError:
+            # Invalid JSON, skip restoration
+            return batch
+
+        if not isinstance(data, dict) or data.get("version") != 1:
+            return batch
+        if data.get("resize_mode") != "letterbox":
+            return batch
+        if not isinstance(batch, torch.Tensor) or batch.ndim != 4:
+            return batch
+
+        canvas = data.get("canvas")
+        items = data.get("items")
+        if (
+            not isinstance(canvas, list)
+            or len(canvas) != 2
+            or canvas != [int(batch.shape[1]), int(batch.shape[2])]
+        ):
+            return batch
+        if not isinstance(items, list) or len(items) != batch.shape[0]:
+            return batch
+
+        restored = []
+        try:
+            for index, item in enumerate(items, 1):
+                if not isinstance(item, dict) or item.get("index") != index:
+                    return batch
+                top, left, height, width = (
+                    item.get("top"),
+                    item.get("left"),
+                    item.get("height"),
+                    item.get("width"),
+                )
+                if any(not isinstance(value, int) or isinstance(value, bool) for value in (top, left, height, width)):
+                    return batch
+                if (
+                    top < 0
+                    or left < 0
+                    or height < 1
+                    or width < 1
+                    or top + height > batch.shape[1]
+                    or left + width > batch.shape[2]
+                ):
+                    return batch
+                restored.append(batch[
+                    index - 1:index,
+                    top:top + height,
+                    left:left + width,
+                    :,
+                ].contiguous())
+
+            # Try to concatenate
+            return torch.cat(restored, dim=0)
+        except (RuntimeError, ValueError):
+            # If concatenation fails or any other error, use original batch
+            return batch
+
+    @staticmethod
+    def _images_to_pil(images, ref_images_metadata=None):
         result = []
         if images is None:
+            if ref_images_metadata is not None:
+                raise ValueError("ref_images_metadata requires images to be connected")
             return result
         tensor = images.detach().cpu() if hasattr(images, "detach") else torch.as_tensor(images)
         if tensor.ndim == 3:
             tensor = tensor.unsqueeze(0)
+        if tensor.ndim != 4:
+            raise ValueError("images must have shape [B, H, W, C]")
+
+        # Only restore letterboxed batch if metadata is explicitly provided
+        if ref_images_metadata is not None:
+            tensor = AutoAnimeStoryboardPipeline._restore_letterboxed_batch(tensor, ref_images_metadata)
+
         for item in tensor:
             arr = item.numpy()
             arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
             if arr.shape[-1] == 4:
                 arr = arr[:, :, :3]
-            result.append(Image.fromarray(arr, mode="RGB"))
+            pil_img = Image.fromarray(arr, mode="RGB")
+            # Compress to 0.5x resolution for faster API calls (只用于生成故事)
+            compressed_size = (int(pil_img.width * 0.5), int(pil_img.height * 0.5))
+            pil_img = pil_img.resize(compressed_size, Image.Resampling.LANCZOS)
+            result.append(pil_img)
         return result
 
     @staticmethod
@@ -107,7 +187,19 @@ class AutoAnimeStoryboardPipeline:
                 logger.warning("Gemini 调用失败（%d/%d）：%s", attempt + 1, retries + 1, exc)
         raise RuntimeError(f"Gemini 调用失败，已尝试 {retries + 1} 次：{last_error}") from last_error
 
-    def run_pipeline(self, user_prompt, api_key, model_name, output_dir, part_duration, max_retries, images=None, history_context="", previous_summary=""):
+    def run_pipeline(
+        self,
+        user_prompt,
+        api_key,
+        model_name,
+        output_dir,
+        part_duration,
+        max_retries,
+        images=None,
+        history_context="",
+        previous_summary="",
+        ref_images_metadata=None,
+    ):
         from google import genai
 
         api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
@@ -115,7 +207,7 @@ class AutoAnimeStoryboardPipeline:
             raise ValueError("请在节点的 api_key 字段填写 Gemini API Key，或设置环境变量 GEMINI_API_KEY。")
 
         client = genai.Client(api_key=api_key)
-        pil_images = self._images_to_pil(images)
+        pil_images = self._images_to_pil(images, ref_images_metadata)
         output_path = Path(output_dir)
         if not output_path.is_absolute():
             output_path = Path.cwd() / output_path

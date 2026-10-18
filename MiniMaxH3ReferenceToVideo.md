@@ -58,6 +58,9 @@ batch，且提供 `batch_resize_mode` 参数。要在 MiniMax 节点恢复原始
 会丢失边缘像素或改变图像比例，元数据无法逆转这些变换，MiniMax 会拒绝用它们恢复。
 Director 的 `image_1`、`image_2` 等独立输出仍供其他工作流使用；此节点只使用
 `ref_images` 批次及可选的 `ref_images_metadata`。
+若同一批图片也接入 `AutoAnimeStoryboardPipeline`，将 `images` 接到该节点的 `images`，
+并将 `image_metadata` 同时接到它的 `ref_images_metadata`；流水线会在上传图片前按元数据
+裁掉 letterbox 填充，向视觉模型提供恢复后的原始画面。
 
 ## 输出
 
