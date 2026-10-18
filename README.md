@@ -60,7 +60,35 @@
 
 ---
 
-### 5. [Network Retry](utils/NetworkRetry.md)
+### 5. [Batch Image Loader 📸](utils/BatchImageLoader.md)
+**批量加载图片节点**
+
+- 支持拖拽上传多张图片（最多 9 张）
+- 支持从文件夹自动加载所有图片
+- 输出为图像批次，便于批量处理
+- 自动转换颜色空间和格式标准化
+- 支持 PNG、JPG、BMP、GIF、WebP 等格式
+
+**分类**: `my_comfyui/utils`  
+**[查看详细文档 →](utils/BatchImageLoader.md)**
+
+---
+
+### 5. [MiniMax H3 Reference to Video](MiniMaxH3ReferenceToVideo.md)
+**智能批量参考条件节点**
+
+- 支持图片、音频、视频多模态参考输入
+- 自动解析和重新索引 `<picture N>` 和 `<audio N>` 标签
+- 灵活的参考图片尺寸模式（match / max）
+- 完整的条件编码和 AV 潜空间生成
+- 适用于高保真角色控制、音频驱动视频、风格继承等场景
+
+**分类**: `model/conditioning/minimax`  
+**[查看详细文档 →](MiniMaxH3ReferenceToVideo.md)**
+
+---
+
+### 6. [Network Retry](utils/NetworkRetry.md)
 **网络请求重试工具**
 
 - 为网络请求提供自动重试机制
@@ -88,6 +116,34 @@
 
 ---
 
+### 7. [🎬 Director Table (Card Manager)](utils/DirectorTable.md)
+**导演卡片表管理节点**
+
+- 加载和管理多个卡片图像（最多 9 个）
+- 自动处理角色标签和元数据
+- 灵活的图像缩放策略（中心裁剪、拉伸、letterbox）
+- 输出图像批次和完整的位置信息元数据
+- 支持相对路径和绝对路径
+
+**分类**: `my_comfyui/director`  
+**[查看详细文档 →](utils/DirectorTable.md)**
+
+---
+
+### 8. [Audio Combine (Batch / Concat)](utils/AudioBatchConcat.md)
+**音频批处理和拼接节点**
+
+- 支持批处理和时间拼接两种模式
+- 自动采样率和声道数对齐
+- 最多 8 个音频输入
+- 灵活的音频处理选项（32kHz - 192kHz）
+- 完整的音频元数据保留
+
+**分类**: `my_comfyui/audio`  
+**[查看详细文档 →](utils/AudioBatchConcat.md)**
+
+---
+
 ## 快速开始
 
 1. 将此文件夹放入 ComfyUI 的 `custom_nodes` 目录
@@ -107,18 +163,26 @@ my_comfyui/
 │   ├── __init__.py
 │   ├── AutoAnimeStoryboardPipeline.py
 │   └── prompts.py
+├── custom_minimax_h3/               # MiniMax H3 节点
+│   └── MiniMaxH3ReferenceToVideo.py  # 智能参考条件节点实现
 ├── utils/                           # 工具节点和模块
 │   ├── __init__.py                  # 工具模块入口
 │   ├── image_counter.py             # 图像计数节点实现
+│   ├── director_node.py             # 导演卡片表节点实现
+│   ├── audio_concat_batch_node.py   # 音频批处理节点实现
 │   ├── network_retry.py             # 网络重试工具
 │   ├── video_processor.py           # 视频处理工具
 │   ├── ImageCounter.md              # 图像计数节点文档
+│   ├── DirectorTable.md             # 导演卡片表节点文档
+│   ├── AudioBatchConcat.md          # 音频批处理节点文档
 │   ├── NetworkRetry.md              # 网络重试工具文档
 │   └── VideoProcessor.md            # 视频处理工具文档
+├── web/                             # 前端 Web 资源
 ├── README.md                        # 项目主文档（当前文件）
 ├── gemini_claude_text.md            # 文本生成节点详细文档
 ├── gemini_video_inspector.md        # 视频质检节点详细文档
-└── AutoAnimeStoryboardPipeline.md   # 动画分镜管线文档
+├── AutoAnimeStoryboardPipeline.md   # 动画分镜管线文档
+└── MiniMaxH3ReferenceToVideo.md     # MiniMax H3 参考条件文档
 ```
 
 ## 依赖要求
@@ -330,6 +394,23 @@ A:
 - 分批处理而不是一次处理所有内容
 
 ## 更新日志
+
+### v1.6.0 (2026-10-19)
+- ✨ 新增 Director Table (Card Manager) 节点：支持导演卡片表管理和多图像批处理
+- ✨ 新增 Audio Combine (Batch / Concat) 节点：支持音频批处理和时间拼接
+- 📝 完善节点文档：添加 DirectorTable.md 和 AudioBatchConcat.md 详细说明
+- 📋 更新项目文件结构文档，反映新增节点和文档位置
+
+### v1.5.0 (2026-10-18)
+- ✨ 新增 Batch Image Loader 节点：支持拖拽上传和文件夹加载多张图片
+- 🎨 支持两种加载模式（folder 和 select），最多 9 张图片拖拽上传
+- 📊 自动合并图像批次，支持格式标准化和颜色空间转换
+- 📝 完整的批量图片加载文档和使用示例
+
+### v1.4.0 (2026-10-18)
+- ✨ 新增 MiniMax H3 Reference to Video 节点：支持智能批量参考条件处理
+- 📝 完善 MiniMax H3 Reference to Video 文档：详细说明多模态参考输入、标签映射、尺寸适配等功能
+- 🔧 注册 MiniMaxH3ReferenceToVideo 节点到主模块，支持在 ComfyUI 中直接使用
 
 ### v1.3.0 (2026-10-18)
 - 📝 完善 Auto Anime Storyboard Pipeline 文档：增加自动化分镜生成和精修的详细说明
