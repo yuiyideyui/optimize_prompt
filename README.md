@@ -331,6 +331,12 @@ A:
 
 ## 更新日志
 
+### v1.3.0 (2026-10-18)
+- 📝 完善 Auto Anime Storyboard Pipeline 文档：增加自动化分镜生成和精修的详细说明
+- 🐛 修复 GeminiVideoInspector 输出格式：改正输出结构中的双花括号处理
+- 🔧 增强 MiniMax H3 动漫提示词修正规则：提升角色动作、表情精确化及镜头稳定性要求
+- 🎬 优化 VideoProcessor 和 GeminiVideoInspector：增强视频上传、音频处理和自动重试机制
+
 ### v1.2.0 (2026-10-17)
 - ✨ 新增 VideoProcessor 工具模块：支持帧到视频合并、音频处理、视频解析
 - 📝 完善文档：添加详细的依赖安装指南、API 配置说明、故障排查
@@ -415,4 +421,4 @@ pip install pillow numpy requests opencv-python soundfile
 
 **提示**: 点击每个节点标题查看详细的使用文档和示例。
 
-**最后更新**: 2026-10-17
+**最后更新**: 2026-10-18
