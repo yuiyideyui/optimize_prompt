@@ -25,6 +25,55 @@ MiniMax H3 的 `17n+5` 网格。
 | `drive_audio` | AUDIO | 源音频，供 `audio_mode` 使用；非 `native` 模式需要连接 |
 | `final_audio` | AUDIO | 可选传递到 `mux_audio`，未连接时输出 `drive_audio` |
 | `first_frame` / `last_frame` | IMAGE | 可选首帧/尾帧条件；可与参考媒体组成 Hybrid 条件 |
+| `model` | MODEL | 可选模型输入；连接后在续写路径中返回已打补丁的 H3 长视频模型 |
+| `context` | H3_T8_CONTEXT | 可选上一段视频的续写上下文；连接后启用长视频续写路径 |
+| `segment_index` | INT | 当前片段编号，从 `0` 开始；首段必须为 `0` |
+| `context_frames` | INT | 续写时使用的尾部视频上下文帧数，可选 `0/5/22/39`；首段会自动强制为 `0` |
+| `context_audio` | 选项 | `video_and_audio` 同时使用视频和音频尾部；`video_only` 只使用视频尾部 |
+| `first_frame_reuse` | 选项 | `segment0_only` 仅首段使用首帧；`persistent_identity_reference` 将首帧作为续写中的身份参考 |
+| `continuity_reference_image` | IMAGE | 可选持续性参考图，用于补强续写片段的外观连续性 |
+| `persistent_identity_strategy` | 选项 | `single_reference` 使用单一身份参考；`scene_plus_identity` 同时强化场景和人物身份 |
+| `persistent_identity_interval` | INT | 持续身份参考的应用间隔，默认 `1` |
+
+### 长视频续写
+
+当 `context` 端口连接有效的 H3 T8 上下文后，`MiniMaxH3BatchRefToVideo` 会切换到
+长视频续写路径。两类输入承担不同职责，续写时建议同时连接：
+
+- `context` 保留上一段的运动状态、镜头位置、人物空间关系、视频尾部 latent，以及可用的音频尾部信息。
+- `ref_images` 和可选的 `ref_images_metadata` 保留人物外观、服装、场景细节和整体色调。
+- `first_frame`、`continuity_reference_image` 可进一步约束首帧或跨片段身份一致性。
+
+因此，连接 `context` 不会自动忽略 `ref_images`。如果续写中出现新场景或新角色，仍然可以
+替换或追加新的 `ref_images`；旧片段的运动/空间连续性由 `context` 提供，新的角色和场景
+外观由参考图提供。
+
+首段设置 `segment_index=0`，并使用 `context_frames=0`。首段没有上一段尾部，节点会自动
+按此规则处理；后续片段将 `segment_index` 递增，并从 Segment Planner 或工作流循环中传入
+对应的 `context_frames`。不要把后续片段的帧数配置到首段。
+
+`ref_images_metadata` 只有在 `ref_images` 已连接时才有效。使用 Director Table 的
+`letterbox` batch 时，应把其 `image_metadata` 一起接入；没有参考图时请不要单独连接元数据。
+
+### 上下文保存、导入与循环
+
+节点 `MiniMax H3 Save Continuation Context (T8)` 接收采样后的 `av_latent`，输出：
+
+- `context_path`：保存到磁盘的上下文文件路径，可用于跨工作流或下次启动后恢复。
+- `report`：校验和、来源片段、帧窗口等信息。
+- `context`：已验证的 H3_T8_CONTEXT，可直接连接到下一次 `MiniMaxH3BatchRefToVideo`。
+
+节点 `MiniMax H3 Load Previous Context (T8)` 可以从 `context_path` 导入已保存文件；不填写
+路径时则按 `chain_id` 和 `segment_index` 从默认上下文状态读取。首段没有上下文时，应使用
+空的 context，并将片段编号设为 `0`；后续片段必须连接 `Context Load` 的 `context` 输出，
+或直接连接上一轮 `Context Save` 的 `context` 输出。
+
+在 ComfyUI 的循环/For 工作流中，推荐把每轮的 `Context Save.context` 回接到下一轮的
+`MiniMaxH3BatchRefToVideo.context`，同时把 `segment_index` 递增。这样不需要手动复制文件；
+若需要中断后继续，再用 `context_path` 连接 `Context Load` 恢复。
+
+旧版独立的 `MiniMaxH3LongVideoPlanner` 和 `MiniMaxH3LongVideoRefToVideo` 已移除，续写
+配置统一放在 `MiniMaxH3BatchRefToVideo`，上下文仅由 `Context Load/Save` 节点负责导入、导出。
 
 ### 主要选项
 
@@ -72,6 +121,7 @@ Director 的 `image_1`、`image_2` 等独立输出仍供其他工作流使用；
 | 4 | `mux_audio` | AUDIO | `final_audio`，或未连接时的 `drive_audio` |
 | 5 | `media_map_json` | STRING | 标签序号到输入媒体的映射 |
 | 6 | `report` | STRING | 任务、时长、画布和校验报告 |
+| 7 | `model` | MODEL | 可选的 H3 长视频模型输出；续写时连接到采样节点使用 |
 
 前三个输出的位置保持旧节点的顺序，以免已有工作流断线；新增的 T8 输出追加在后。
 
