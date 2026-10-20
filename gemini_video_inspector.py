@@ -8,10 +8,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from PIL import Image
 from .utils.network_retry import retry_on_network_error
 from .utils.video_processor import VideoProcessor
+from .telegram_bot.telegram_sender import TelegramSender
+from .telegram_bot.review_manager import ReviewManager
 
 
 def _debug(message):
@@ -31,6 +34,11 @@ _NETWORK_RETRY_DELAY = 5
 _RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
+class TelegramFallbackTriggered(Exception):
+    """当 Gemini 接口失败后成功发送到 Telegram 人工审核时抛出"""
+    pass
+
+
 def _is_retryable_network_error(error):
     """Return whether an error is likely caused by a temporary network problem."""
     if isinstance(error, urllib.error.HTTPError):
@@ -46,9 +54,59 @@ def _is_retryable_network_error(error):
     return False
 
 
+def _try_telegram_fallback(error_message: str, fallback_info: dict) -> bool:
+    """尝试将失败的视频审核任务发送到 Telegram 人工审核
+
+    Args:
+        error_message: 错误消息
+        fallback_info: Dict with keys {video_file, system_prompt, user_prompt, task_id}
+
+    Returns:
+        是否成功发送到 Telegram
+    """
+    try:
+        sender = TelegramSender()
+        task_id = fallback_info.get("task_id") or str(uuid.uuid4())
+
+        result = sender.send_video_for_review(
+            task_id=task_id,
+            video_file=fallback_info.get("video_file", ""),
+            system_prompt=fallback_info.get("system_prompt", ""),
+            user_prompt=fallback_info.get("user_prompt", ""),
+            error_message=error_message,
+        )
+
+        if result:
+            _debug(f"已成功发送到 Telegram 人工审核，任务 ID: {task_id}")
+            return True
+        else:
+            _debug("发送到 Telegram 失败")
+            return False
+    except Exception as e:
+        _debug(f"尝试 Telegram 回退异常: {e}")
+        return False
+
+
 def _run_with_network_retry(operation_name, operation, max_attempts=_NETWORK_MAX_ATTEMPTS,
-                            retry_delay=_NETWORK_RETRY_DELAY):
-    """Run a network operation with bounded retries and visible diagnostics."""
+                            retry_delay=_NETWORK_RETRY_DELAY,
+                            telegram_fallback_info=None):
+    """Run a network operation with bounded retries and visible diagnostics.
+
+    Args:
+        operation_name: Name of the operation for logging
+        operation: Callable that performs the operation
+        max_attempts: Maximum number of retry attempts
+        retry_delay: Initial delay between retries (exponential backoff)
+        telegram_fallback_info: Dict with keys {video_file, system_prompt, user_prompt, task_id}
+                               If provided, sends to Telegram on final failure
+
+    Returns:
+        Operation result or raises TelegramFallbackTriggered on Telegram send
+
+    Raises:
+        TelegramFallbackTriggered: When max retries exceeded and Telegram sent successfully
+        Original exception: When max retries exceeded and Telegram not configured or failed
+    """
     for attempt in range(1, max_attempts + 1):
         try:
             return operation()
@@ -58,6 +116,16 @@ def _run_with_network_retry(operation_name, operation, max_attempts=_NETWORK_MAX
                     f"{operation_name} failed permanently after {attempt}/{max_attempts}: "
                     f"{type(error).__name__}: {error}"
                 )
+
+                # 达到最大重试次数后，尝试通过 Telegram 发送人工审核
+                if attempt >= max_attempts and telegram_fallback_info:
+                    _debug(f"{operation_name} 达到最大重试次数，尝试发送到 Telegram 人工审核")
+                    error_message = f"{type(error).__name__}: {str(error)[:200]}"
+                    if _try_telegram_fallback(error_message, telegram_fallback_info):
+                        raise TelegramFallbackTriggered(
+                            f"已发送至 Telegram 人工审核，请等待审核结果。任务 ID: {telegram_fallback_info.get('task_id')}"
+                        )
+
                 raise
 
             delay = min(retry_delay * (2 ** (attempt - 1)), 30)
@@ -69,7 +137,7 @@ def _run_with_network_retry(operation_name, operation, max_attempts=_NETWORK_MAX
 
 
 @retry_on_network_error(max_retries=4, retry_delay=60)
-def _post_json(url, headers, payload, timeout):
+def _post_json(url, headers, payload, timeout, telegram_fallback_info=None):
     _debug(
         f"HTTP POST start: endpoint={_safe_endpoint(url)}, "
         f"timeout={timeout}s, payload_bytes={len(json.dumps(payload).encode('utf-8'))}"
@@ -439,25 +507,49 @@ class GeminiVideoInspector:
         )
 
         try:
-            if video_file:
-                if provider != "gemini":
-                    _debug(f"calling {provider} with extracted image parts")
+            # 准备 Telegram 回退信息（用于网络错误时发送）
+            task_id = str(uuid.uuid4())[:8]
+            telegram_fallback_info = {
+                "task_id": task_id,
+                "video_file": video_file or "",
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+
+            try:
+                if video_file:
+                    if provider != "gemini":
+                        _debug(f"calling {provider} with extracted image parts")
+                        response_text = self._call_provider(
+                            provider, base_url, model_name, api_key, system_prompt,
+                            image_data, temperature, max_tokens, timeout,
+                            telegram_fallback_info=telegram_fallback_info,
+                        )
+                    else:
+                        _debug("calling Gemini video path")
+                        response_text = self._call_gemini_video(
+                            base_url, model_name, api_key, system_prompt, video_file,
+                            temperature, max_tokens, timeout,
+                            telegram_fallback_info=telegram_fallback_info,
+                        )
+                else:
+                    # 图像模式：使用原有逻辑
+                    _debug(f"calling {provider} image path")
                     response_text = self._call_provider(
                         provider, base_url, model_name, api_key, system_prompt,
-                        image_data, temperature, max_tokens, timeout
+                        image_data, temperature, max_tokens, timeout,
+                        telegram_fallback_info=telegram_fallback_info,
                     )
-                else:
-                    _debug("calling Gemini video path")
-                    response_text = self._call_gemini_video(
-                        base_url, model_name, api_key, system_prompt, video_file,
-                        temperature, max_tokens, timeout
-                    )
-            else:
-                # 图像模式：使用原有逻辑
-                _debug(f"calling {provider} image path")
-                response_text = self._call_provider(
-                    provider, base_url, model_name, api_key, system_prompt,
-                    image_data, temperature, max_tokens, timeout
+            except TelegramFallbackTriggered as tg_error:
+                # Telegram 人工审核已触发，返回待审核状态
+                _debug(f"Telegram 人工审核已发送: {tg_error}")
+                return (
+                    False,  # passed
+                    0.0,  # score
+                    str(tg_error),  # feedback
+                    f"已发送至 Telegram 人工审核。任务 ID: {task_id}",  # log_text
+                    "",  # h3_optimize_prompt
+                    "",  # distilled_meta_prompt
                 )
 
             result = self._parse_response(response_text, pass_threshold)
@@ -510,28 +602,33 @@ class GeminiVideoInspector:
     def _call_provider(
         provider, base_url, model_name, api_key, system_prompt, image_data,
         temperature, max_tokens, timeout,
+        telegram_fallback_info=None,
     ):
         _debug(f"provider dispatch: provider={provider}, image_parts={len(image_data or [])}")
         if provider == "gemini":
             return GeminiVideoInspector._call_gemini(
                 base_url, model_name, api_key, system_prompt, image_data,
                 temperature, max_tokens, timeout,
+                telegram_fallback_info=telegram_fallback_info,
             )
         if provider == "openai":
             return GeminiVideoInspector._call_openai(
                 base_url, model_name, api_key, system_prompt, image_data,
                 temperature, max_tokens, timeout,
+                telegram_fallback_info=telegram_fallback_info,
             )
         if provider == "claude":
             return GeminiVideoInspector._call_claude(
                 base_url, model_name, api_key, system_prompt, image_data,
                 temperature, max_tokens, timeout,
+                telegram_fallback_info=telegram_fallback_info,
             )
         raise ValueError(f"Unsupported provider: {provider}")
 
     @staticmethod
     def _call_gemini_video(base_url, model_name, api_key, system_prompt, video_path,
-                           temperature, max_tokens, timeout):
+                           temperature, max_tokens, timeout,
+                           telegram_fallback_info=None):
         """Upload a video through Gemini's resumable Files API and inspect it."""
         _debug(f"video upload: reading file={video_path}")
         with open(video_path, "rb") as f:
@@ -562,6 +659,7 @@ class GeminiVideoInspector:
                     mime_type,
                     timeout,
                 ),
+                telegram_fallback_info=telegram_fallback_info,
             )
         except urllib.error.HTTPError as error:
             response_body = error.read().decode("utf-8", errors="replace")
@@ -683,7 +781,8 @@ class GeminiVideoInspector:
 
     @staticmethod
     def _call_gemini(base_url, model_name, api_key, system_prompt, image_data,
-                     temperature, max_tokens, timeout):
+                     temperature, max_tokens, timeout,
+                     telegram_fallback_info=None):
         parts = []
         parts.extend(
             {"inline_data": {"mime_type": "image/png", "data": image}}
@@ -705,12 +804,14 @@ class GeminiVideoInspector:
             {},
             payload,
             timeout,
+            telegram_fallback_info=telegram_fallback_info,
         )
         return _gemini_text(response)
 
     @staticmethod
     def _call_openai(base_url, model_name, api_key, system_prompt, image_data,
-                     temperature, max_tokens, timeout):
+                     temperature, max_tokens, timeout,
+                     telegram_fallback_info=None):
         base_url = base_url.strip().rstrip("/")
         if not base_url:
             base_url = "https://api.openai.com/v1"
@@ -733,7 +834,10 @@ class GeminiVideoInspector:
         }
 
         headers = {"Authorization": f"Bearer {api_key}"}
-        response = _post_json(url, headers, payload, timeout)
+        response = _post_json(
+            url, headers, payload, timeout,
+            telegram_fallback_info=telegram_fallback_info,
+        )
 
         choices = response.get("choices")
         if not choices:
@@ -748,7 +852,8 @@ class GeminiVideoInspector:
 
     @staticmethod
     def _call_claude(base_url, model_name, api_key, system_prompt, image_data,
-                     temperature, max_tokens, timeout):
+                     temperature, max_tokens, timeout,
+                     telegram_fallback_info=None):
         base_url = base_url.strip().rstrip("/")
         if not base_url:
             base_url = "https://api.anthropic.com/v1"
@@ -778,7 +883,10 @@ class GeminiVideoInspector:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01"
         }
-        response = _post_json(url, headers, payload, timeout)
+        response = _post_json(
+            url, headers, payload, timeout,
+            telegram_fallback_info=telegram_fallback_info,
+        )
 
         content_blocks = response.get("content")
         if not content_blocks:

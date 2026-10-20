@@ -4,10 +4,10 @@
 
 ## 节点列表
 
-### 1. [Gemini / Claude Text](gemini_claude_text.md)
+### 1. [Gemini / Claude / Gemma Text](gemini_claude_text.md)
 **多模态文本生成节点**
 
-- 支持 Gemini 和 Claude 两种 AI 提供商
+- 支持 Gemini、Gemma 和 Claude 三种 AI 提供商
 - 支持纯文本或图文混合输入
 - 可配置温度、top_p、最大 token 数等参数
 - 适用于图像描述、内容分析、创意生成等场景

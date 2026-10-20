@@ -124,7 +124,7 @@ class GeminiClaudeText:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "provider": (["gemini", "claude", "openai"], {"default": "gemini"}),
+                "provider": (["gemini", "gemma", "claude", "openai"], {"default": "gemini"}),
                 "user_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "systems_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "api_key": ("STRING", {"default": ""}),
@@ -176,7 +176,7 @@ class GeminiClaudeText:
             raise ValueError("model cannot be empty")
 
         image_data = _image_parts(images)
-        if provider == "gemini":
+        if provider in ("gemini", "gemma"):
             return (self._generate_gemini(
                 user_prompt,
                 systems_prompt,

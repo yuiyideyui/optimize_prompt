@@ -9,7 +9,57 @@
 `vae` 输入名称、前三个输出端口顺序，并将 `ref_images` 和 `ref_audios` 批次
 拆成 T8 按序处理的参考项。
 
-## 输入
+## 智能媒体过滤和重新索引
+
+本节点现已支持**自动媒体过滤和重新索引**功能。
+
+### 工作原理
+
+当 prompt 中只使用了部分参考媒体时（例如只用 `<picture 1>` 和 `<picture 3>` 而跳过 `<picture 2>`），节点会：
+
+1. **自动检测** prompt 中实际使用的所有 `<picture N>`、`<image N>`、`<audio N>` 标签序号
+2. **过滤** 出只有被 prompt 使用的媒体，丢弃未使用的媒体
+3. **重新编号** 保留的媒体使其形成连续序列（1、2、3...）
+4. **重写** prompt 中的标签序号以匹配新的编号
+5. **同步更新** letterbox 元数据（如果已连接）
+
+### 示例
+
+**输入状态**：
+- `ref_images` batch 包含 3 张图片：image_1、image_2、image_3
+- `ref_audios` batch 包含 3 个音频：audio_1、audio_2、audio_3
+- `prompt = "A character based on <picture 1>, with details from <picture 3>, speaking with <audio 2>"`
+
+**处理流程**：
+1. 检测 prompt 使用：pictures {1, 3}、audios {2}
+2. 过滤媒体：
+   - 图片：保留 image_1 和 image_3，丢弃 image_2
+   - 音频：保留 audio_2，丢弃 audio_1 和 audio_3
+3. 重新编号：
+   - 图片重映射：1 → 1、3 → 2
+   - 音频重映射：2 → 1
+4. 重写 prompt：`"A character based on <picture 1>, with details from <picture 2>, speaking with <audio 1>"`
+5. 传给 MiniMax H3：2 张图片、1 个音频
+
+**好处**：
+- 节省计算资源（不处理未使用的媒体）
+- 避免序号混乱（prompt 标签总是与实际媒体匹配）
+- 灵活的工作流（可随意跳过某些参考而无需手动重排）
+
+### 特殊情况处理
+
+**Letterbox 元数据**：
+- 如果连接了 `ref_images_metadata`（来自 Director Table），节点会自动更新其中的 `items` 索引
+- 确保元数据中的裁剪坐标仍然对应正确的图片
+- 若元数据更新失败，将输出警告但继续处理
+
+**音频序号调整**：
+- 如果 `prompt_primary_audio_ordinal` 设置的序号大于过滤后的音频总数，会被自动重置为 0（禁用源音频映射）
+- 这避免了标签解析时的序号越界错误
+
+**无使用媒体**：
+- 如果 prompt 中没有使用任何 `<picture>`、`<audio>`、`<video>` 标签，则所有批次媒体都会被过滤掉
+- 节点将仅使用 `first_frame` 和 `last_frame` 作为条件
 
 必需输入包括 `clip`、`vae`（视频 VAE）、`audio_vae`、`prompt`、
 `width`、`height` 和 `length`。宽高须为 32 的倍数；帧数会按 T8 规则处理到

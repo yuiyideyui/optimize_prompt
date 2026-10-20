@@ -17,6 +17,13 @@ from .t8_port.sampling import (
     SCHEDULER_OPTIONS,
     setup_dual_clock_sampling,
 )
+from .media_reindexer import (
+    extract_used_media_indices,
+    create_reindex_mapping,
+    reindex_prompt,
+    filter_and_reindex_batch,
+    update_letterbox_metadata,
+)
 
 
 def _load_long_video_api():
@@ -388,13 +395,76 @@ class MiniMaxH3BatchRefToVideo:
             metadata_connected = bool(
                 isinstance(ref_images_metadata, str) and ref_images_metadata.strip()
             )
-            images = (
+
+            # 先提取原始批次值
+            raw_image_values = (
                 _restore_letterboxed_batch(ref_images, ref_images_metadata)
                 if metadata_connected
                 else _image_batch_values(ref_images)
             )
+            raw_audio_values = _audio_batch_values(ref_audios)
+
+            # 步骤1：提取 prompt 中实际使用的媒体序号
+            used_media = extract_used_media_indices(prompt)
+
+            # 如果 prompt 中没有任何媒体标签，保留所有连接的媒体
+            has_media_tags = any(used_media.values())
+            if not has_media_tags:
+                if raw_image_values:
+                    used_media["pictures"] = set(
+                        int(k.rsplit("_", 1)[-1])
+                        for k in raw_image_values.keys()
+                        if k.startswith("ref_image_")
+                    )
+                if raw_audio_values:
+                    used_media["audios"] = set(
+                        int(k.rsplit("_", 1)[-1])
+                        for k in raw_audio_values.keys()
+                        if k.startswith("ref_audio_")
+                    )
+
+            # 步骤2：创建重索引映射
+            reindex_mapping = create_reindex_mapping(used_media)
+
+            # 步骤3：过滤并重新编号图片
+            images, picture_reindex_mapping = filter_and_reindex_batch(
+                raw_image_values,
+                used_media.get("pictures", set()),
+                "ref_image"
+            ) if used_media.get("pictures") else ({}, {})
+
+            # 步骤4：如果有图片被过滤，同步更新 letterbox 元数据
+            effective_ref_images_metadata = ref_images_metadata
+            if metadata_connected and picture_reindex_mapping:
+                effective_ref_images_metadata, metadata_updated = update_letterbox_metadata(
+                    ref_images_metadata,
+                    picture_reindex_mapping
+                )
+                if not metadata_updated and picture_reindex_mapping:
+                    import sys
+                    print(
+                        f"WARNING: Failed to update ref_images_metadata for reindexing. "
+                        f"Metadata may not match filtered images.",
+                        file=sys.stderr
+                    )
+
+            # 步骤5：提取、过滤并重新编号音频
+            raw_audio_values = _audio_batch_values(ref_audios)
+            audios, audio_reindex_mapping = filter_and_reindex_batch(
+                raw_audio_values,
+                used_media.get("audios", set()),
+                "ref_audio"
+            ) if used_media.get("audios") else ({}, {})
+
             effective_strict_prompt_tags = strict_prompt_tags
-            audios = _audio_batch_values(ref_audios)
+
+            # 步骤6：调整 prompt_primary_audio_ordinal 如果它超过了过滤后的音频数量
+            effective_prompt_primary_audio_ordinal = prompt_primary_audio_ordinal
+            if audio_reindex_mapping and prompt_primary_audio_ordinal > len(audio_reindex_mapping):
+                effective_prompt_primary_audio_ordinal = 0
+
+            # 步骤7：重新编写 prompt 中的媒体标签
+            processed_prompt_for_api = reindex_prompt(prompt, reindex_mapping)
             videos, video_audios = {}, {}
             for index in range(1, 4):
                 video = kwargs.get(f"ref_video_{index}")
@@ -414,7 +484,7 @@ class MiniMaxH3BatchRefToVideo:
                 current_segment,
                 effective_context_frames,
                 kwargs.get("context_audio", "video_and_audio"),
-                prompt,
+                processed_prompt_for_api,
                 width,
                 height,
                 length,
@@ -422,7 +492,7 @@ class MiniMaxH3BatchRefToVideo:
                 audio_mode,
                 audio_denoise_strength,
                 add_source_as_reference,
-                prompt_primary_audio_ordinal,
+                effective_prompt_primary_audio_ordinal,
                 effective_strict_prompt_tags,
                 ref_image_size,
                 reference_video_policy,
@@ -452,12 +522,75 @@ class MiniMaxH3BatchRefToVideo:
         )
         if ref_images is None and metadata_connected:
             raise ValueError("ref_images_metadata is only valid when ref_images is connected")
-        image_values = (
+
+        # 先提取原始批次值
+        raw_image_values = (
             _restore_letterboxed_batch(ref_images, ref_images_metadata)
             if metadata_connected
             else _image_batch_values(ref_images)
         )
-        audio_values = _audio_batch_values(ref_audios)
+        raw_audio_values = _audio_batch_values(ref_audios)
+
+        # 步骤1：提取 prompt 中实际使用的媒体序号
+        used_media = extract_used_media_indices(prompt)
+
+        # 如果 prompt 中没有任何媒体标签，保留所有连接的媒体
+        has_media_tags = any(used_media.values())
+        if not has_media_tags:
+            if raw_image_values:
+                used_media["pictures"] = set(
+                    int(k.rsplit("_", 1)[-1])
+                    for k in raw_image_values.keys()
+                    if k.startswith("ref_image_")
+                )
+            if raw_audio_values:
+                used_media["audios"] = set(
+                    int(k.rsplit("_", 1)[-1])
+                    for k in raw_audio_values.keys()
+                    if k.startswith("ref_audio_")
+                )
+
+        # 步骤2：创建重索引映射
+        reindex_mapping = create_reindex_mapping(used_media)
+
+        # 步骤3：过滤并重新编号图片
+        image_values, picture_reindex_mapping = filter_and_reindex_batch(
+            raw_image_values,
+            used_media.get("pictures", set()),
+            "ref_image"
+        ) if used_media.get("pictures") else ({}, {})
+
+        # 步骤4：如果有图片被过滤，同步更新 letterbox 元数据
+        effective_ref_images_metadata = ref_images_metadata
+        if metadata_connected and picture_reindex_mapping:
+            effective_ref_images_metadata, metadata_updated = update_letterbox_metadata(
+                ref_images_metadata,
+                picture_reindex_mapping
+            )
+            if not metadata_updated and picture_reindex_mapping:
+                # 元数据更新失败但有图片被过滤 - 发出警告但继续
+                import sys
+                print(
+                    f"WARNING: Failed to update ref_images_metadata for reindexing. "
+                    f"Metadata may not match filtered images.",
+                    file=sys.stderr
+                )
+
+        # 步骤5：提取、过滤并重新编号音频
+        raw_audio_values = _audio_batch_values(ref_audios)
+        audio_values, audio_reindex_mapping = filter_and_reindex_batch(
+            raw_audio_values,
+            used_media.get("audios", set()),
+            "ref_audio"
+        ) if used_media.get("audios") else ({}, {})
+
+        # 步骤6：调整 prompt_primary_audio_ordinal 如果它超过了过滤后的音频数量
+        effective_prompt_primary_audio_ordinal = prompt_primary_audio_ordinal
+        if audio_reindex_mapping and prompt_primary_audio_ordinal > len(audio_reindex_mapping):
+            effective_prompt_primary_audio_ordinal = 0
+
+        # 步骤7：重新编写 prompt 中的媒体标签
+        processed_prompt_input = reindex_prompt(prompt, reindex_mapping)
 
         video_values = {}
         video_audio_values = {}
@@ -473,7 +606,7 @@ class MiniMaxH3BatchRefToVideo:
             clip,
             vae,
             audio_vae,
-            prompt,
+            processed_prompt_input,
             width,
             height,
             length,
@@ -481,7 +614,7 @@ class MiniMaxH3BatchRefToVideo:
             audio_mode,
             audio_denoise_strength,
             add_source_as_reference,
-            prompt_primary_audio_ordinal,
+            effective_prompt_primary_audio_ordinal,
             strict_prompt_tags,
             ref_image_size,
             reference_video_policy,

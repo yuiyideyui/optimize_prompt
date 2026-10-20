@@ -44,8 +44,25 @@ class AutoAnimeStoryboardPipeline:
                 "ref_images_metadata": ("STRING", {"multiline": False}),
                 "history_context": ("STRING", {"multiline": True, "default": ""}),
                 "previous_summary": ("STRING", {"multiline": True, "default": ""}),
+                "image_scale": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 1.0, "step": 0.1}),
+                "image_quality": ("INT", {"default": 85, "min": 1, "max": 100, "step": 5}),
             }
         }
+
+    @staticmethod
+    def _extract_dialogue_audio_refs(text):
+        """提取文本中所有对话和关联的音频引用。返回 {audio_id: [dialogue_snippets]}"""
+        audio_dialogues = {}
+        # 匹配 <Audio N> 或 <audio N> 以及周围的对话内容
+        pattern = r"[：:\"\']*([^：\"\'\n]*?)[：:\"\']*\s*<[Aa]udio\s+(\d+)>"
+        for match in re.finditer(pattern, text):
+            dialogue = match.group(1).strip()
+            audio_id = match.group(2)
+            if dialogue:
+                if audio_id not in audio_dialogues:
+                    audio_dialogues[audio_id] = []
+                audio_dialogues[audio_id].append(dialogue)
+        return audio_dialogues
 
     @staticmethod
     def _split_parts(text):
@@ -135,7 +152,7 @@ class AutoAnimeStoryboardPipeline:
             return batch
 
     @staticmethod
-    def _images_to_pil(images, ref_images_metadata=None):
+    def _images_to_pil(images, ref_images_metadata=None, image_scale=0.5, image_quality=85):
         result = []
         if images is None:
             if ref_images_metadata is not None:
@@ -157,9 +174,17 @@ class AutoAnimeStoryboardPipeline:
             if arr.shape[-1] == 4:
                 arr = arr[:, :, :3]
             pil_img = Image.fromarray(arr, mode="RGB")
-            # Compress to 0.5x resolution for faster API calls (只用于生成故事)
-            compressed_size = (int(pil_img.width * 0.5), int(pil_img.height * 0.5))
-            pil_img = pil_img.resize(compressed_size, Image.Resampling.LANCZOS)
+            # 压缩分辨率以加速 API 调用
+            if image_scale < 1.0:
+                compressed_size = (int(pil_img.width * image_scale), int(pil_img.height * image_scale))
+                pil_img = pil_img.resize(compressed_size, Image.Resampling.LANCZOS)
+            # 压缩画质（通过 JPEG 转换）
+            if image_quality < 100:
+                import io
+                buffer = io.BytesIO()
+                pil_img.save(buffer, format="JPEG", quality=image_quality)
+                buffer.seek(0)
+                pil_img = Image.open(buffer).convert("RGB")
             result.append(pil_img)
         return result
 
@@ -199,6 +224,8 @@ class AutoAnimeStoryboardPipeline:
         history_context="",
         previous_summary="",
         ref_images_metadata=None,
+        image_scale=0.5,
+        image_quality=85,
     ):
         from google import genai
 
@@ -207,7 +234,7 @@ class AutoAnimeStoryboardPipeline:
             raise ValueError("请在节点的 api_key 字段填写 Gemini API Key，或设置环境变量 GEMINI_API_KEY。")
 
         client = genai.Client(api_key=api_key)
-        pil_images = self._images_to_pil(images, ref_images_metadata)
+        pil_images = self._images_to_pil(images, ref_images_metadata, image_scale, image_quality)
         output_path = Path(output_dir)
         if not output_path.is_absolute():
             output_path = Path.cwd() / output_path
@@ -246,8 +273,8 @@ class AutoAnimeStoryboardPipeline:
         if audio_count > 0:
             audio_rule = (
                 f"本次任务声明的音频素材共有 {audio_count} 个，编号槽位固定为 `<Audio 1>` 至 `<Audio {audio_count}>`。"
-                f"分镜中若涉及角色参考音频或配音绑定，**必须且只能**使用原生的音频编号（如 `<Audio 1>`, `<Audio 2>`），"
-                "严禁随意编造或修改音频编号格式。\n"
+                f"分镜中**仅当**涉及需要音频绑定的角色参考音频或配音时，必须且只能使用原生的音频编号（如 `<Audio 1>`, `<Audio 2>`），"
+                "严禁随意编造或修改音频编号格式。无关角色的台词可以不标注音频编号。\n"
             )
 
         summary_section = ""
@@ -262,12 +289,24 @@ class AutoAnimeStoryboardPipeline:
                 f"【续写指令】：请紧接着上文结尾的文字状态，从 **Part {next_start_part}** 开始向后续写，目标生成新的一批 Part（凑够 1 分钟剧情）。保持角色站位、情感及场景逻辑严密衔接，切勿直接复用旧图像像素。"
             )
 
+        dialogue_rule = ""
+        if audio_count > 0:
+            dialogue_rule = (
+                "【对话与音频绑定规则】：\n"
+                "- 当需要音频绑定的角色说台词时，必须在台词后立即标注其对应的音频编号（如 `角色A："台词内容" <Audio 1>`）\n"
+                "- 一个音频号对应一个角色或角色的一段台词，避免混乱和重复\n"
+                "- 无关角色（没有提供 Audio 或 Picture 的角色）的台词**不需要**标注音频编号，可直接使用\n"
+                "- 对话格式严格遵守：`"台词" <Audio N>` 或 `角色名："台词" <Audio N>`（仅对有音频绑定的角色）\n"
+                "- 严禁对有绑定的角色篡改、丢失或错误映射音频编号\n\n"
+            )
+
         generation_prompt = (
             f"{user_prompt}\n"
             f"{summary_section}"
             f"{history_section}\n\n"
             f"{numbering_rule}\n"
             f"{audio_rule}"
+            f"{dialogue_rule}"
             f"每个Part的时长不超过 {part_duration} 秒（可根据剧情节奏灵活调整，只要不超过此上限）。\n"
             "请严格遵守系统提示词中的输出格式和镜头规则。注意动作连贯性与正反打剪辑规范。"
         )
@@ -295,11 +334,12 @@ class AutoAnimeStoryboardPipeline:
                 f"当前处理序号：{index}/{len(parts)}；原始Part编号：{part_number}。\n"
                 f"每个Part时长不超过 {part_duration} 秒（可根据剧情需要灵活调整，只要不超过此上限）。\n"
                 f"本次声明参考图 {reference_count} 张；实际上传 {len(pil_images)} 张。\n"
-                + (f"本次声明音频素材 {audio_count} 个。\n" if audio_count > 0 else "") +
-                "所有图像素材名称必须写成原始的 `<picture number>` 占位符，绝对不要出现任何上一帧图片编号。\n"
-                + ("所有音频引用必须严格保留原有的 `<Audio number>` 格式，不得丢失或篡改。\n" if audio_count > 0 else "") +
-                "必须保留原始Part编号、标题、剧情、对白、镜头编号。\n"
-                f"{previous_context}\n\n<PART_CONTENT>\n{part_content}\n</PART_CONTENT>"
+                + (f"本次声明音频素材 {audio_count} 个。\n" if audio_count > 0 else "")
+                + "所有图像素材名称必须写成原始的 `<picture number>` 占位符，绝对不要出现任何上一帧图片编号。\n"
+                + ("对于有音频绑定的角色，所有音频引用必须严格保留原有的 `<Audio number>` 格式。无关角色的台词可不标注音频。\n" if audio_count > 0 else "")
+                + ("对于有音频绑定的角色，所有对话必须保留其关联的音频编号（如 `台词 <Audio 1>`），确保对话-音频映射的完整性。\n" if audio_count > 0 else "")
+                + "必须保留原始Part编号、标题、剧情、对白、镜头编号。\n"
+                + f"{previous_context}\n\n<PART_CONTENT>\n{part_content}\n</PART_CONTENT>"
             )
             refined = self._call_model(
                 client, model_name, [refine_prompt],

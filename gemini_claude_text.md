@@ -1,6 +1,6 @@
-# Gemini / Claude Text 节点
+# Gemini / Claude / Gemma Text 节点
 
-文本生成节点，支持通过 Gemini 和 Claude API 进行多模态文本生成。
+文本生成节点，支持通过 Gemini、Gemma 和 Claude API 进行多模态文本生成。
 
 ## 节点信息
 
@@ -11,7 +11,7 @@
 
 ## 功能简述
 
-支持 Gemini 和 Claude 两种 AI 提供商，可处理纯文本或图文混合输入，生成高质量文本内容。适用于图像描述、内容分析、创意生成等场景。
+支持 Gemini、Gemma 和 Claude 三种 AI 提供商，可处理纯文本或图文混合输入，生成高质量文本内容。适用于图像描述、内容分析、创意生成等场景。
 
 ## 输入参数
 
@@ -19,11 +19,11 @@
 
 | 参数名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `provider` | Combo | `gemini` | AI 提供商选择：`gemini` 或 `claude` |
+| `provider` | Combo | `gemini` | AI 提供商选择：`gemini`、`gemma`、`claude` 或 `openai` |
 | `user_prompt` | STRING (multiline) | `""` | 用户提示词，描述你想让 AI 做什么 |
 | `systems_prompt` | STRING (multiline) | `""` | 系统提示词，设定 AI 的角色和行为规范 |
 | `api_key` | STRING | `""` | API 密钥（必填） |
-| `model` | STRING | `gemini-2.5-flash` | 模型名称，如 `gemini-2.5-flash`、`claude-3-5-sonnet-20241022` 等 |
+| `model` | STRING | `gemini-2.5-flash` | 模型名称，如 `gemini-2.5-flash`、`gemma-2-27b`、`claude-3-5-sonnet-20241022` 等 |
 | `base_url` | STRING | `https://generativelanguage.googleapis.com` | API 基础 URL，可自定义代理地址 |
 | `temperature` | FLOAT | `0.7` | 温度参数（0.0-2.0），控制输出的随机性，越高越有创意 |
 | `top_p` | FLOAT | `0.95` | Top-p 采样参数（0.0-1.0），核采样阈值 |
@@ -46,7 +46,7 @@
 
 ### 纯文本生成
 1. 添加节点到工作流
-2. 选择 `provider` 为 `gemini` 或 `claude`
+2. 选择 `provider` 为 `gemini`、`gemma` 或 `claude`
 3. 填入 `api_key`
 4. 在 `user_prompt` 中输入提示词，如："写一首关于春天的诗"
 5. 执行工作流
@@ -67,19 +67,31 @@
 - **推荐模型**: `gemini-2.0-flash-exp`、`gemini-2.5-flash`、`gemini-2.5-pro`
 - **特点**: 速度快，对图像理解能力强
 
+### Gemma
+- **默认 URL**: `https://generativelanguage.googleapis.com`
+- **推荐模型**: `gemma-2-27b`、`gemma-2-9b`、`gemma-2-2b`
+- **特点**: 开源轻量级模型，成本低，适合本地部署或小规模任务
+- **兼容性**: 使用与 Gemini 相同的 Google Generative Language API
+
 ### Claude
 - **默认 URL**: 需要使用兼容的 API 端点
 - **推荐模型**: `claude-3-5-sonnet-20241022`、`claude-3-opus-20240229`
 - **特点**: 文本质量高，逻辑推理能力强
+
+### OpenAI
+- **默认 URL**: `https://api.openai.com/v1`
+- **推荐模型**: `gpt-4o`、`gpt-4-turbo`、`gpt-3.5-turbo`
+- **特点**: 功能全面，支持多种模型选择
 
 ## 核心实现函数
 
 - `_post_json()` - 发送 JSON POST 请求的通用方法
 - `_image_parts()` - 将图像张量转换为 base64 编码
 - `_claude_url()` - 构建 Claude API URL
-- `_gemini_url()` - 构建 Gemini API URL
-- `_gemini_text()` - 从 Gemini 响应中提取文本
+- `_gemini_url()` - 构建 Gemini/Gemma API URL
+- `_gemini_text()` - 从 Gemini/Gemma 响应中提取文本
 - `_claude_text()` - 从 Claude 响应中提取文本
+- `_openai_text()` - 从 OpenAI 响应中提取文本
 
 ## 注意事项
 
@@ -87,6 +99,7 @@
 2. **超时设置**: 复杂任务建议增加 `timeout` 值
 3. **Token 限制**: 注意 `max_tokens` 设置，避免输出被截断
 4. **图像数量**: 多图场景会消耗更多 token，注意成本控制
+5. **Gemma 兼容性**: Gemma 模型通过 Google API 调用，需要有效的 Google API 密钥
 
 ## 错误处理
 
@@ -101,3 +114,4 @@
 
 - 实现代码: [gemini_claude_text.py](gemini_claude_text.py)
 - 项目主页: [README.md](README.md)
+
