@@ -90,6 +90,20 @@
 
 ---
 
+### 5.5 [MiniMax H3 Context Conditioning Adapter](custom_minimax_h3/MiniMaxH3ContextConditioningAdapter.md)
+**关键帧条件自适应节点**
+
+- 自动调整 conditioning 中的关键帧潜码尺寸
+- 检测目标采样画布尺寸，智能缩放关键帧以匹配
+- 保护参考图片、视频、音频等媒体负载的原始尺寸
+- 提供详细的适配报告，记录处理过程
+- 与 MiniMax H3 Reference to Video 节点配合使用
+
+**分类**: `conditioning/minimax`  
+**[查看详细文档 →](custom_minimax_h3/MiniMaxH3ContextConditioningAdapter.md)**
+
+---
+
 ### 6. [Network Retry](utils/NetworkRetry.md)
 **网络请求重试工具**
 
@@ -176,8 +190,10 @@ my_comfyui/
 │   └── prompts.py
 ├── custom_minimax_h3/               # MiniMax H3 节点
 │   ├── minimax_h3_ref2va_images.py   # 智能参考条件和长视频续写节点
+│   ├── context_conditioning_adapter.py  # 关键帧条件自适应节点
 │   ├── media_reindexer.py            # Prompt 媒体过滤和重编号
-│   └── test_media_reindexer.py       # 媒体重编号测试
+│   ├── test_media_reindexer.py       # 媒体重编号测试
+│   └── MiniMaxH3ContextConditioningAdapter.md  # 条件适配节点文档
 ├── telegram_bot/                     # Telegram 人工审核和回复 Bot
 │   ├── startup.py                    # Webhook / Polling 启动入口
 │   ├── bot_handler.py                # 消息及审核处理
