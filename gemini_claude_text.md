@@ -23,7 +23,7 @@
 | `user_prompt` | STRING (multiline) | `""` | 用户提示词，描述你想让 AI 做什么 |
 | `systems_prompt` | STRING (multiline) | `""` | 系统提示词，设定 AI 的角色和行为规范 |
 | `api_key` | STRING | `""` | API 密钥（必填） |
-| `model` | STRING | `gemini-2.5-flash` | 模型名称，如 `gemini-2.5-flash`、`gemma-2-27b`、`claude-3-5-sonnet-20241022` 等 |
+| `model` | STRING (multiline) | `gemini-2.5-flash` | 模型名称；可每行填写一个备用模型，或用逗号分隔，按顺序尝试 |
 | `base_url` | STRING | `https://generativelanguage.googleapis.com` | API 基础 URL，可自定义代理地址 |
 | `temperature` | FLOAT | `0.7` | 温度参数（0.0-2.0），控制输出的随机性，越高越有创意 |
 | `top_p` | FLOAT | `0.95` | Top-p 采样参数（0.0-1.0），核采样阈值 |
@@ -100,6 +100,8 @@
 3. **Token 限制**: 注意 `max_tokens` 设置，避免输出被截断
 4. **图像数量**: 多图场景会消耗更多 token，注意成本控制
 5. **Gemma 兼容性**: Gemma 模型通过 Google API 调用，需要有效的 Google API 密钥
+6. **模型降级**: 每个模型最多请求 4 次，失败后切换列表中的下一个模型
+7. **Telegram 兜底**: 所有模型都失败后，会将提示词和输入图片发送到已配置的 Telegram Bot，并等待对该消息的直接回复；回复内容作为节点输出。Bot 必须运行并能接收 Telegram 更新。等待回复最多 1 小时，超时会报错。API 密钥不会发送到 Telegram
 
 ## 错误处理
 

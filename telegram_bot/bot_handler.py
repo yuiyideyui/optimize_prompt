@@ -7,6 +7,7 @@ from typing import Optional, Callable
 from .config import TelegramConfig
 from .review_manager import ReviewManager
 from .comfyui_client import ComfyUIClient
+from .response_bridge import TelegramResponseBridge
 
 
 class TelegramBotHandler:
@@ -15,6 +16,7 @@ class TelegramBotHandler:
     def __init__(self):
         self.config = TelegramConfig()
         self.review_manager = ReviewManager()
+        self.response_bridge = TelegramResponseBridge(self.config)
         self.api_base = "https://api.telegram.org/bot"
 
     def handle_update(self, update: dict, webhook_callback: Optional[Callable] = None) -> bool:
@@ -221,6 +223,10 @@ class TelegramBotHandler:
         print(f"[TelegramBotHandler] 收到消息: {text}")
 
         # 处理命令
+        if self.response_bridge.complete_reply(message, self.config.get_user_id()):
+            self._send_message(str(chat_id), "Reply received and sent back to ComfyUI.")
+            return True
+
         if text.startswith("/"):
             return self._handle_command(chat_id, text)
 

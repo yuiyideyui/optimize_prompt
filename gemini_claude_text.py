@@ -10,7 +10,6 @@ from PIL import Image
 from .utils.network_retry import retry_on_network_error
 
 
-@retry_on_network_error(max_retries=4, retry_delay=60)
 def _post_json(url, headers, payload, timeout):
     request = urllib.request.Request(
         url,
@@ -128,7 +127,14 @@ class GeminiClaudeText:
                 "user_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "systems_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "api_key": ("STRING", {"default": ""}),
-                "model": ("STRING", {"default": "gemini-2.5-flash"}),
+                "model": (
+                    "STRING",
+                    {
+                        "default": "gemini-2.5-flash",
+                        "multiline": True,
+                        "placeholder": "One model per line; tried in order",
+                    },
+                ),
                 "base_url": (
                     "STRING",
                     {"default": "https://generativelanguage.googleapis.com"},
@@ -169,54 +175,71 @@ class GeminiClaudeText:
         images=None,
     ):
         api_key = api_key.strip()
-        model = model.strip()
+        models = list(
+            dict.fromkeys(
+                candidate.strip()
+                for candidate in model.replace(",", "\n").splitlines()
+                if candidate.strip()
+            )
+        )
         if not api_key:
             raise ValueError("api_key cannot be empty")
-        if not model:
+        if not models:
             raise ValueError("model cannot be empty")
 
         image_data = _image_parts(images)
         if provider in ("gemini", "gemma"):
-            return (self._generate_gemini(
-                user_prompt,
-                systems_prompt,
-                api_key,
-                model,
-                base_url,
-                temperature,
-                top_p,
-                max_tokens,
-                timeout,
-                image_data,
-            ),)
+            generate_for_model = self._generate_gemini
         elif provider == "claude":
-            return (self._generate_claude(
-                user_prompt,
-                systems_prompt,
-                api_key,
-                model,
-                base_url,
-                temperature,
-                top_p,
-                max_tokens,
-                timeout,
-                image_data,
-            ),)
+            generate_for_model = self._generate_claude
         elif provider == "openai":
-            return (self._generate_openai(
-                user_prompt,
-                systems_prompt,
-                api_key,
-                model,
-                base_url,
-                temperature,
-                top_p,
-                max_tokens,
-                timeout,
-                image_data,
-            ),)
+            generate_for_model = self._generate_openai
         else:
             raise ValueError(f"Unsupported provider: {provider}")
+
+        failures = []
+        for candidate in models:
+            try:
+                generate_with_retries = retry_on_network_error(
+                    max_retries=4, retry_delay=60
+                )(
+                    lambda: generate_for_model(
+                        user_prompt,
+                        systems_prompt,
+                        api_key,
+                        candidate,
+                        base_url,
+                        temperature,
+                        top_p,
+                        max_tokens,
+                        timeout,
+                        image_data,
+                    )
+                )
+                return (generate_with_retries(),)
+            except Exception as error:
+                failures.append(f"{candidate}: {error}")
+                print(
+                    f"[GeminiClaudeText] Model {candidate} failed after retries; trying the next model"
+                )
+
+        try:
+            from .telegram_bot.response_bridge import TelegramResponseBridge
+
+            response = TelegramResponseBridge().request_response(
+                provider=provider,
+                models=models,
+                systems_prompt=systems_prompt,
+                user_prompt=user_prompt,
+                images=image_data,
+            )
+            return (response,)
+        except Exception as error:
+            failure_details = "; ".join(failures)
+            raise RuntimeError(
+                f"All configured models failed ({failure_details}). "
+                f"Telegram fallback failed: {error}"
+            ) from error
 
     @staticmethod
     def _generate_gemini(
