@@ -4,11 +4,13 @@
 
 ## 节点列表
 
-### 1. [Gemini / Claude / Gemma Text](gemini_claude_text.md)
+### 1. [Gemini / Claude / Gemma / OpenAI Text](gemini_claude_text.md)
 **多模态文本生成节点**
 
-- 支持 Gemini、Gemma 和 Claude 三种 AI 提供商
+- 支持 Gemini、Gemma、Claude 和 OpenAI 兼容接口
 - 支持纯文本或图文混合输入
+- 支持按顺序配置多个备用模型，每个模型失败 4 次后自动切换
+- 全部模型失败后可发送请求到 Telegram，并将人工回复作为节点输出
 - 可配置温度、top_p、最大 token 数等参数
 - 适用于图像描述、内容分析、创意生成等场景
 
@@ -144,12 +146,21 @@
 
 ---
 
+## Telegram Bot（可选）
+
+- 支持视频质检任务的 Telegram 人工审核、状态查询和任务查询
+- 支持 Webhook 和 Polling 两种 Bot 运行模式
+- 文本生成节点的模型全部失败时，可发送提示词和输入图片，并等待对原消息的直接回复
+- Bot 配置及启动方式见 [Telegram Bot 快速启动指南](telegram_bot/QUICK_START.md) 和 [完整配置说明](telegram_bot/TELEGRAM_SETUP.md)
+
+---
+
 ## 快速开始
 
 1. 将此文件夹放入 ComfyUI 的 `custom_nodes` 目录
 2. 重启 ComfyUI 或刷新节点列表
 3. 在节点菜单的 `my_comfyui/AI` 分类下找到相应节点
-4. 准备好 Gemini 或 Claude 的 API 密钥
+4. 准备所选服务提供商的 API 密钥
 5. 开始使用！
 
 ## 文件结构
@@ -164,7 +175,16 @@ my_comfyui/
 │   ├── AutoAnimeStoryboardPipeline.py
 │   └── prompts.py
 ├── custom_minimax_h3/               # MiniMax H3 节点
-│   └── MiniMaxH3ReferenceToVideo.py  # 智能参考条件节点实现
+│   ├── minimax_h3_ref2va_images.py   # 智能参考条件和长视频续写节点
+│   ├── media_reindexer.py            # Prompt 媒体过滤和重编号
+│   └── test_media_reindexer.py       # 媒体重编号测试
+├── telegram_bot/                     # Telegram 人工审核和回复 Bot
+│   ├── startup.py                    # Webhook / Polling 启动入口
+│   ├── bot_handler.py                # 消息及审核处理
+│   ├── response_bridge.py            # 文本节点兜底回复关联
+│   ├── telegram_sender.py            # 工作流任务发送
+│   ├── QUICK_START.md                # 快速启动指南
+│   └── TELEGRAM_SETUP.md             # 完整配置说明
 ├── utils/                           # 工具节点和模块
 │   ├── __init__.py                  # 工具模块入口
 │   ├── image_counter.py             # 图像计数节点实现
@@ -395,6 +415,17 @@ A:
 
 ## 更新日志
 
+### v1.8.0 (2026-10-21)
+- ✨ Gemini / Claude / Gemma / OpenAI 文本节点支持多个备用模型；每个模型最多请求 4 次，失败后按顺序切换
+- 🤖 所有模型均失败时，将提示词和输入图片发给 Telegram Bot，并等待人工直接回复作为节点输出
+- 📱 新增 Telegram Bot 视频审核、任务/状态查询，以及 Webhook 和 Polling 运行模式
+- 🎧 MiniMax H3 根据 Prompt 中实际使用的媒体标签过滤并重编号图片/音频，同步更新 Prompt 标签和 letterbox 元数据
+
+#### 2026-10-20
+- 🎬 MiniMax H3 新增 T8 长视频分段续写，可保存、导入并循环传递续写上下文
+- 🔊 续写上下文支持视频/音频尾部控制，并可配置首帧复用和持续身份参考
+- 📝 补充长视频续写、上下文读写及媒体过滤说明，详见 [MiniMax H3 文档](MiniMaxH3ReferenceToVideo.md)
+
 ### v1.7.0 (2026-10-19)
 - ✨ 增强 Auto Anime Storyboard Pipeline：支持 `ref_images_metadata` 参数，与 Director Table 节点无缝集成
 - 🎨 新增 Letterbox 图片恢复功能：自动恢复被 Director Table letterbox 处理的原始尺寸，提升视觉保真度
@@ -508,4 +539,4 @@ pip install pillow numpy requests opencv-python soundfile
 
 **提示**: 点击每个节点标题查看详细的使用文档和示例。
 
-**最后更新**: 2026-10-19
+**最后更新**: 2026-10-21
