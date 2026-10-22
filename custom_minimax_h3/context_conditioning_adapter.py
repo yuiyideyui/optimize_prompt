@@ -1,5 +1,3 @@
-"""Align MiniMax H3 timeline-keyframe conditioning to the sampling latent canvas."""
-
 import torch
 import torch.nn.functional as F
 
@@ -31,17 +29,20 @@ def _resize_keyframe_latent(value, target_h, target_w):
         return value, False
 
     batch, channels, frames, _, _ = value.shape
-    # Resize each temporal slice independently; context timestamps and T stay intact.
+    # 将时间维展平到批次维，独立缩放每个时间步的空间特征
     images = value.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, source_h, source_w)
     original_dtype = images.dtype
     if images.device.type == "cpu" and original_dtype in (torch.float16, torch.bfloat16):
         images = images.float()
+    
+    # 使用 bilinear 替代 bicubic，减少缩放高频振铃导致的边缘重影
     resized = F.interpolate(
         images,
         size=(target_h, target_w),
-        mode="bicubic",
+        mode="bilinear",
         align_corners=False,
     ).to(dtype=original_dtype)
+    
     resized = resized.reshape(batch, frames, channels, target_h, target_w)
     return resized.permute(0, 2, 1, 3, 4).contiguous(), True
 
@@ -90,7 +91,7 @@ def adapt_keyframe_conditioning(conditioning, latent):
     report = (
         f"canvas={target_w * 16}x{target_h * 16}px; "
         f"keyframe_latents={keyframe_count}; resized={resized_count}; "
-        "reference image/video/audio payloads unchanged"
+        f"reference image/video/audio payloads unchanged"
     )
     return adapted, report
 
