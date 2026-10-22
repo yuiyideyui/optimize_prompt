@@ -385,6 +385,43 @@ class PhaseDETests(unittest.TestCase):
             )
         self.assertEqual(stored["source_fingerprint"], summary["source_fingerprint"])
 
+    def test_story_memory_crosses_chapters_and_tracks_state_and_threads(self):
+        self.add_page("memory-page-1", "chapter-1", 1)
+        self.add_page("memory-page-2", "chapter-2", 1)
+        first = _analysis("memory-page-1", chapter_id="chapter-1", characters=[])
+        first["state_changes"] = [{
+            "subject": "Aki", "attribute": "location", "value": "station",
+            "certainty": "confirmed", "panel_index": 1, "confidence": 0.9,
+        }]
+        first["new_open_threads"] = [{
+            "description": "Who owns the key?", "thread_type": "mystery",
+            "panel_index": 1, "confidence": 0.8,
+        }]
+        self.database.save_analysis("memory-analysis-1", "memory-page-1", "test", "v1", first, self.root / "one.json")
+        update_knowledge_base(self.database, first, resolve_analysis_entities(self.database, first))
+
+        second = _analysis("memory-page-2", chapter_id="chapter-2", characters=[])
+        second["state_changes"] = [{
+            "subject": "Aki", "attribute": "location", "value": "school",
+            "certainty": "uncertain", "panel_index": 1, "confidence": 0.4,
+        }]
+        second["resolved_threads"] = [{
+            "description": "Who owns the key?", "panel_index": 1, "confidence": 0.95,
+        }]
+        self.database.save_analysis("memory-analysis-2", "memory-page-2", "test", "v1", second, self.root / "two.json")
+        update_knowledge_base(self.database, second, resolve_analysis_entities(self.database, second))
+
+        previous, _ = build_page_context(self.database, "project-1", "chapter-2", 2, "Aki", history_pages=3)
+        memory = json.loads(previous)
+        self.assertEqual(memory["current_state"][0]["value"], "station")
+        self.assertEqual(memory["current_state"][0]["status"], "active")
+        self.assertEqual(memory["recent_pages"][0]["chapter_id"], "chapter-1")
+        with self.database.connect() as connection:
+            states = connection.execute("SELECT value,status FROM story_state_facts ORDER BY value").fetchall()
+            threads = connection.execute("SELECT status FROM open_threads").fetchall()
+        self.assertEqual({(row["value"], row["status"]) for row in states}, {("station", "active"), ("school", "uncertain")})
+        self.assertEqual(threads[0]["status"], "resolved")
+
     def test_strong_character_match_carries_across_chapters(self):
         first = _analysis("page-1", "chapter-1", characters=[_analysis("page-1")["characters"][0]])
         self.add_page("page-1", "chapter-1", 1)

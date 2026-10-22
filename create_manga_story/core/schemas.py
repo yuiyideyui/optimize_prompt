@@ -4,7 +4,7 @@ import math
 from typing import Any, Dict
 
 
-ANALYSIS_SCHEMA_VERSION = "1.1"
+ANALYSIS_SCHEMA_VERSION = "1.2"
 
 GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -120,6 +120,19 @@ GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
         },
         "continuity": {"type": "ARRAY", "items": {"type": "STRING"}},
         "uncertainties": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "state_changes": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+            "subject": {"type": "STRING"}, "attribute": {"type": "STRING"},
+            "value": {"type": "STRING"}, "certainty": {"type": "STRING"},
+            "panel_index": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}
+        }, "required": ["subject", "attribute", "value", "certainty", "panel_index", "confidence"]}},
+        "new_open_threads": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+            "description": {"type": "STRING"}, "thread_type": {"type": "STRING"},
+            "panel_index": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}
+        }, "required": ["description", "thread_type", "panel_index", "confidence"]}},
+        "resolved_threads": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+            "description": {"type": "STRING"}, "panel_index": {"type": "INTEGER"},
+            "confidence": {"type": "NUMBER"}
+        }, "required": ["description", "panel_index", "confidence"]}},
     },
     "required": [
         "summary",
@@ -135,6 +148,9 @@ GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
 }
 
 def validate_analysis(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        for field in ("state_changes", "new_open_threads", "resolved_threads"):
+            value.setdefault(field, [])
     _validate_value(value, GEMINI_RESPONSE_SCHEMA, "analysis")
     return value
 

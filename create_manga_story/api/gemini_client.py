@@ -63,10 +63,20 @@ def analyze_image(
         "and put uncertain interpretations in uncertainties. Distinguish "
         "observable facts from inferred identity or emotion. Return only the "
         "requested JSON object. Describe character relationships only when "
-        "supported by visible dialogue or clear story evidence."
+        "supported by visible dialogue or clear story evidence. For state_changes, "
+        "report explicit changes to a character/object/location attribute (subject, "
+        "attribute, value, certainty='confirmed' or 'uncertain', panel_index, confidence); "
+        "do not infer changes from a static appearance. Record unresolved mysteries or "
+        "unfinished goals as new_open_threads, and only clearly answered prior questions "
+        "as resolved_threads."
     )
     if previous_summary.strip():
-        prompt += "\nPrevious-page context (use only as context, not proof):\n" + previous_summary.strip()
+        prompt += (
+            "\nContinuity memory. Treat entries marked confirmed as established story "
+            "facts with the cited page as evidence; uncertain entries are hypotheses "
+            "and must not be promoted to facts. Use this to interpret continuity, but "
+            "do not contradict visible evidence:\n" + previous_summary.strip()
+        )
     if retrieved_knowledge:
         prompt += (
             "\nRetrieved historical candidates (not identity proof; preserve "

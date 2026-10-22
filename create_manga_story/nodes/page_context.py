@@ -18,6 +18,7 @@ class ComicPageContextBuilder:
                 "query": ("STRING", {"default": "", "multiline": True}),
                 "history_pages": ("INT", {"default": 3, "min": 0, "max": 20}),
                 "retrieval_limit": ("INT", {"default": 8, "min": 1, "max": 100}),
+                "context_budget": ("INT", {"default": 9000, "min": 1000, "max": 50000}),
             }
         }
 
@@ -34,6 +35,7 @@ class ComicPageContextBuilder:
         query: str,
         history_pages: int,
         retrieval_limit: int,
+        context_budget: int = 9000,
     ):
         database = ComicDatabase(get_data_root() / "comic2anime.sqlite3")
         database.initialize()
@@ -45,12 +47,13 @@ class ComicPageContextBuilder:
             query,
             history_pages,
             retrieval_limit,
+            context_budget,
         )
         return (
             previous,
             knowledge,
             json.dumps(
-                {"previous_summary": previous, "retrieved_knowledge": knowledge},
+                {"previous_summary": json.loads(previous), "retrieved_knowledge": knowledge},
                 ensure_ascii=False,
                 indent=2,
             ),

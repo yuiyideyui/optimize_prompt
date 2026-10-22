@@ -8,6 +8,7 @@ from .nodes.knowledge_retriever import ComicKnowledgeRetriever
 from .nodes.knowledge_updater import ComicKnowledgeBaseUpdater
 from .nodes.page_context import ComicPageContextBuilder
 from .nodes.rag_index_rebuilder import ComicKnowledgeIndexRebuilder
+from .nodes.qwen_edit_2511 import QwenImageEditCustomNode
 
 NODE_CLASS_MAPPINGS = {
     "ComicChapterLoader": ComicChapterLoader,
@@ -18,6 +19,7 @@ NODE_CLASS_MAPPINGS = {
     "ComicChapterSummarizer": ComicChapterSummarizer,
     "ComicKnowledgeBaseUpdater": ComicKnowledgeBaseUpdater,
     "ComicKnowledgeIndexRebuilder": ComicKnowledgeIndexRebuilder,
+    "QwenImageEditCustomNode": QwenImageEditCustomNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -29,6 +31,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ComicChapterSummarizer": "Comic Chapter Summarizer",
     "ComicKnowledgeBaseUpdater": "Comic Knowledge Base Updater",
     "ComicKnowledgeIndexRebuilder": "Comic Knowledge Index Rebuilder",
+    "QwenImageEditCustomNode": "Qwen Image Edit (Custom)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

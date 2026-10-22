@@ -6,11 +6,12 @@
 
 ## 功能说明
 
-该节点用于在 MiniMax H3 视频生成流程中自动调整条件张量（conditioning）中的关键帧潜码（keyframe latents）尺寸，使其与目标采样画布尺寸一致。
+该节点用于在 MiniMax H3 视频生成流程中自动调整条件张量（conditioning）中的关键帧潜码（keyframe latents）尺寸，并可同步调整 T8 续写 context 中的视频/音频尾部潜码，使其与目标采样画布尺寸一致。
 
 **核心作用**：
 - 自动检测生成视频的画布尺寸（根据采样 latent）
 - 智能缩放 conditioning 中的 `minimax_keyframes` 关键帧潜码
+- 可选缩放 context 中的 `video_tail` 和 `audio_tail`
 - 保持参考图片、视频、音频等媒体负载的原始尺寸（不修改）
 - 提供详细的适配报告，记录处理过程和缓存命中情况
 
@@ -25,6 +26,7 @@
 |------|------|------|--------|
 | `conditioning` | CONDITIONING | ComfyUI 条件张量列表，包含 cond_tensor 和 metadata 对象 | ✅ 是 |
 | `latent` | LATENT | MiniMax H3 联合 AV (audio-video) 潜码，必须包含嵌套张量结构 | ✅ 是 |
+| `context` | H3_T8_CONTEXT | 可选的 T8 续写上下文，包含视频/音频尾部潜码 | 否 |
 
 ### 参数说明
 
@@ -46,6 +48,7 @@
 | 输出名 | 类型 | 说明 |
 |------|------|------|
 | `conditioning` | CONDITIONING | 调整后的条件张量（关键帧潜码已缩放到目标尺寸） |
+| `context` | H3_T8_CONTEXT | 调整后的 T8 上下文；未连接时返回空值 |
 | `report` | STRING | 适配过程的详细报告字符串 |
 
 ### 输出详情
@@ -53,6 +56,7 @@
 **conditioning**：
 - 结构与输入相同，保持向后兼容
 - 关键帧潜码中的 latent 已缩放到目标尺寸
+- context 的 `video_tail` / `audio_tail`（如存在）已缩放到目标尺寸
 - 参考图片、视频、音频等媒体负载保持原始尺寸
 - metadata 的其他字段保持不变
 
@@ -75,7 +79,7 @@
 
 ### 缩放细节
 
-- **缩放方式**：双三次插值（bicubic，align_corners=False）
+- **缩放方式**：双线性插值（bilinear，align_corners=False）
 - **保留精度**：自动处理 FP16 / BF16 数据类型，必要时临时转为 FP32 再还原
 - **时间轴保持**：缩放仅作用于空间维度（H, W），时间维度（T）保持不变
 - **内存效率**：对每个时间步骤独立缩放，避免大规模临时张量
@@ -94,10 +98,11 @@ KSampler 或其他采样器（进行实际生成）
 
 ### 连接方式
 
-1. 将 `MiniMax H3 Reference to Video` 节点的 `conditioning` 输出连接到本节点的 `conditioning` 输入
+1. 将生成节点的 `conditioning` 输出连接到本节点的 `conditioning` 输入
 2. 将采样前获得的 MiniMax H3 `latent` 连接到本节点的 `latent` 输入
-3. 将本节点的 `conditioning` 输出连接到采样器（如 KSampler）的 conditioning 输入
-4. 参考 `report` 输出了解缩放情况
+3. 进行 T8 续写时，将 `H3_T8_CONTEXT` 连接到 `context`
+4. 将本节点的 `conditioning` 和 `context` 输出分别连接到后续采样节点
+5. 参考 `report` 输出了解缩放情况
 
 ### 参数配置
 

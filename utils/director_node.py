@@ -21,9 +21,8 @@ class DirectorTableNode:
             }
         }
 
-    _IMAGE_OUTPUTS = tuple(f"image_{index}" for index in range(1, 10))
-    RETURN_TYPES = ("IMAGE", "INT", "STRING", *("IMAGE",) * len(_IMAGE_OUTPUTS), "STRING")
-    RETURN_NAMES = ("images", "count", "roles_summary", *_IMAGE_OUTPUTS, "image_metadata")
+    RETURN_TYPES = ("IMAGE", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("images", "count", "roles_summary", "image_metadata")
     FUNCTION = "process_director_table"
     CATEGORY = "my_comfyui/director"
 
@@ -82,16 +81,9 @@ class DirectorTableNode:
                 dummy,
                 0,
                 "No valid images",
-                *(None,) * len(self._IMAGE_OUTPUTS),
                 json.dumps(metadata),
             )
-        if len(images) > len(self._IMAGE_OUTPUTS):
-            raise ValueError(
-                f"Director Table supports at most {len(self._IMAGE_OUTPUTS)} images; got {len(images)}"
-            )
 
-        individual_outputs = tuple(image.unsqueeze(0) for image in images)
-        individual_outputs += (None,) * (len(self._IMAGE_OUTPUTS) - len(individual_outputs))
 
         # IMAGE batches require a common canvas. The selected policy controls
         # how source aspect ratios are mapped to that shared output size.
@@ -150,7 +142,6 @@ class DirectorTableNode:
             combined,
             len(images),
             ", ".join(roles),
-            *individual_outputs,
             json.dumps(metadata),
         )
 

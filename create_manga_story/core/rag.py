@@ -15,6 +15,7 @@ def rebuild_project_index(database: ComicDatabase, project_id: str) -> int:
         connection.execute(
             "DELETE FROM rag_index_records WHERE project_id = ?", (project_id,)
         )
+        connection.commit()
         records: List[Dict[str, Any]] = []
 
         def add(
@@ -202,7 +203,7 @@ def rebuild_project_index(database: ComicDatabase, project_id: str) -> int:
                 row["panel_index"],
             )
         connection.executemany(
-            """INSERT INTO rag_index_records(
+            """INSERT OR REPLACE INTO rag_index_records(
                 record_id, project_id, entity_type, entity_id, record_type,
                 text_content, source_page_id, source_panel_index
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",

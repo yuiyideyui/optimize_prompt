@@ -17,7 +17,7 @@
 7. 后续使用 MiniMax H3 等视频模型生成动漫片段。
 8. 检查角色身份、外观、动作、镜头和剧情连续性。
 
-**本次只实现漫画理解、数据持久化、基础 RAG 和 ComfyUI 节点交互，不实现图片生成或视频生成。**
+当前实现已覆盖漫画理解、数据持久化、基础 RAG、跨章节连续性记忆和 ComfyUI 节点交互；本仓库同时提供一个基于 ComfyUI 原生节点组合的 Qwen Image Edit 自定义节点。完整的视频生成、视频续写和自动质量检查仍不属于本模块。
 
 ---
 
@@ -697,9 +697,8 @@ ComfyUI 的节点执行应遵循其运行机制，不要擅自创建会与 Comfy
 
 ## 十、当前阶段的禁止事项
 
-本次不要实现：
+当前模块仍不包含：
 
-- Qwen-Image-Edit 2511 图片生成节点。
 - 角色三视图生成节点。
 - Character LoRA 训练节点。
 - MiniMax H3 视频生成节点。
@@ -748,7 +747,17 @@ ComfyUI 的节点执行应遵循其运行机制，不要擅自创建会与 Comfy
 
 ## 第一阶段 A—F 实现与使用
 
-当前插件实现覆盖阶段 A—F：ComfyUI 节点注册、漫画页面导入、Gemini 分析、跨页上下文、保守的实体候选匹配、可重建的 SQLite 文本检索、章节总结及幂等知识库更新。向量检索、自动图片生成、视频生成和真实 ComfyUI 环境验收仍未实现。
+当前插件实现覆盖阶段 A—F：ComfyUI 节点注册、漫画页面导入、Gemini 分析、跨页上下文、保守的实体候选匹配、可重建的 SQLite 文本检索、章节总结及幂等知识库更新。向量检索、完整自动图片生成、视频生成和真实 ComfyUI 环境验收仍未实现。
+
+### 当前版本新增能力
+
+- `Comic Page Context Builder` 会按章节顺序读取前序页面，并在固定 `context_budget` 内组织近期页面、当前状态和开放剧情线索。
+- 页面分析结果新增 `state_changes`、`new_open_threads` 和 `resolved_threads` 的持久化更新；状态记录带有确定性、置信度和来源页面。
+- `ComicDatabase.rebuild_story_memory(project_id)` 可从每页最新分析重建派生状态与剧情线索，适合重新分析或修复数据库后的恢复操作。
+- `Gemini Comic Page Analyzer` 会先按项目、章节和页面哈希查询缓存，命中时直接复用最近的结构化分析结果。
+- `QwenImageEditCustomNode` 注册在 `QwenImageEdit` 分类，输入一张必选参考图和最多两张可选参考图，输出编辑后的 `IMAGE`。
+
+Qwen 节点依赖当前 ComfyUI 提供的 `UNETLoader`、`CLIPLoader(type="qwen_image")`、`TextEncodeQwenImageEditPlus`、`FluxKontextImageScale`、`KSampler` 等节点；对应模型文件和 ComfyUI 版本兼容性需要在实际环境中确认。
 
 ### 安装
 

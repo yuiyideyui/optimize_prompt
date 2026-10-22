@@ -19,6 +19,7 @@ class GeminiComicPageAnalyzer:
             "required": {
                 "pages": ("COMIC_PAGES",),
                 "page_index": ("INT", {"default": 1, "min": 1}),
+                "api_key": ("STRING", {"default": ""}),
                 "previous_summary": ("STRING", {"default": "", "multiline": True}),
                 "model": ("STRING", {"default": "gemini-2.5-flash"}),
                 "api_base_url": (
@@ -42,11 +43,12 @@ class GeminiComicPageAnalyzer:
         self,
         pages: List[Dict[str, Any]],
         page_index: int,
+        api_key: str,
         previous_summary: str,
         model: str,
         api_base_url: str,
         timeout_seconds: int,
-        max_retries: int,
+        max_retries: int = 2,
         retrieved_knowledge=None,
     ):
         if not isinstance(pages, list) or not pages:
@@ -58,10 +60,28 @@ class GeminiComicPageAnalyzer:
             if not isinstance(page.get(required), str) or not page[required]:
                 raise ValueError("Selected page is missing {!r}.".format(required))
 
+        root = get_data_root()
+        db = ComicDatabase(root / "comic2anime.sqlite3")
+        db.initialize()
+
+        cached = None
+        if page.get("sha256"):
+            cached = db.find_analysis_by_sha256(
+                page["project_id"], page["chapter_id"], page["sha256"]
+            )
+        if cached is not None:
+            cached["result"]["_cached"] = True
+            cached["result"]["_cache_source"] = cached["analysis_id"]
+            return (
+                cached["result"],
+                json.dumps(cached["result"], ensure_ascii=False),
+                cached["result_path"],
+            )
+
         result = analyze_image(
             image_path=Path(page["image_path"]),
             model=model,
-            api_key=os.environ.get("GEMINI_API_KEY", ""),
+            api_key=api_key,
             base_url=api_base_url,
             timeout=timeout_seconds,
             previous_summary=previous_summary,
@@ -77,7 +97,6 @@ class GeminiComicPageAnalyzer:
             }
         )
 
-        root = get_data_root()
         analysis_id = str(uuid.uuid4())
         output_directory = (
             root
@@ -92,8 +111,6 @@ class GeminiComicPageAnalyzer:
         try:
             with result_path.open("x", encoding="utf-8") as result_file:
                 result_file.write(serialized)
-            db = ComicDatabase(root / "comic2anime.sqlite3")
-            db.initialize()
             db.save_analysis(
                 analysis_id=analysis_id,
                 page_id=page["page_id"],

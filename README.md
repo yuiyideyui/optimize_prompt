@@ -94,6 +94,7 @@
 **关键帧条件自适应节点**
 
 - 自动调整 conditioning 中的关键帧潜码尺寸
+- 可选调整 T8 续写 context 中的视频/音频尾部潜码尺寸
 - 检测目标采样画布尺寸，智能缩放关键帧以匹配
 - 保护参考图片、视频、音频等媒体负载的原始尺寸
 - 提供详细的适配报告，记录处理过程
@@ -101,6 +102,20 @@
 
 **分类**: `conditioning/minimax`  
 **[查看详细文档 →](custom_minimax_h3/MiniMaxH3ContextConditioningAdapter.md)**
+
+---
+
+### 6. [Comic Story Knowledge Workflow](create_manga_story/README.md)
+**漫画页面分析、跨章节记忆与知识库工作流**
+
+- 使用 Gemini 分析漫画页面并缓存相同页面的分析结果
+- 维护跨章节页面上下文、角色/场景知识和来源证据
+- 记录角色或物体状态变化，并跟踪未解决剧情线索
+- 支持有上限的结构化上下文输出，避免提示词无限增长
+- 新增 `Qwen Image Edit (Custom)` 节点，用于基于一至三张参考图的图像编辑
+
+**分类**: `create_manga_story`
+**[查看详细文档 →](create_manga_story/README.md)**
 
 ---
 
@@ -135,7 +150,7 @@
 ### 7. [🎬 Director Table (Card Manager)](utils/DirectorTable.md)
 **导演卡片表管理节点**
 
-- 加载和管理多个卡片图像（最多 9 个）
+- 加载和管理多个卡片图像
 - 自动处理角色标签和元数据
 - 灵活的图像缩放策略（中心裁剪、拉伸、letterbox）
 - 输出图像批次和完整的位置信息元数据
@@ -213,6 +228,11 @@ my_comfyui/
 │   ├── AudioBatchConcat.md          # 音频批处理节点文档
 │   ├── NetworkRetry.md              # 网络重试工具文档
 │   └── VideoProcessor.md            # 视频处理工具文档
+├── create_manga_story/              # 漫画分析、知识库和 Qwen 图像编辑节点
+│   ├── core/                        # SQLite、实体匹配、RAG 和连续性记忆
+│   ├── nodes/                       # ComfyUI 漫画工作流节点
+│   ├── tests/                       # 单元测试
+│   └── README.md                    # 漫画工作流说明
 ├── web/                             # 前端 Web 资源
 ├── README.md                        # 项目主文档（当前文件）
 ├── gemini_claude_text.md            # 文本生成节点详细文档
@@ -430,6 +450,15 @@ A:
 - 分批处理而不是一次处理所有内容
 
 ## 更新日志
+
+### v1.9.0 (2026-10-23)
+- 🧠 漫画知识库新增跨章节上下文：按章节顺序读取历史页面，并输出角色/物体状态、来源证据和未解决剧情线索
+- 🔁 新增故事记忆重建与状态/悬念更新逻辑；重新分析页面时清理并重建派生记忆，避免旧状态残留
+- 💾 Gemini 漫画页面分析增加按页面哈希缓存，重复执行同一页面可复用已保存结果
+- 📦 新增 `QwenImageEditCustomNode`，支持一至三张参考图、Qwen Image Edit 文本编码、采样和 VAE 解码
+- 🎞️ MiniMax H3 Context Conditioning Adapter 新增 T8 context 的视频/音频尾部潜码尺寸适配，并输出适配后的 context
+- 🧹 DirectorTableNode 简化输出为图像批次、数量、角色摘要和元数据，移除固定的 9 个单图输出
+- 🧪 补充跨章节状态、剧情线索解析与记忆上下文测试
 
 ### v1.8.0 (2026-10-21)
 - ✨ Gemini / Claude / Gemma / OpenAI 文本节点支持多个备用模型；每个模型最多请求 4 次，失败后按顺序切换

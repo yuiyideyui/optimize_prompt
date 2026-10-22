@@ -123,6 +123,10 @@ def update_knowledge_base(
             (page_id,),
         )
         connection.execute("DELETE FROM story_events WHERE page_id = ?", (page_id,))
+        connection.execute("UPDATE story_state_facts SET valid_to_page_id = NULL WHERE valid_to_page_id = ?", (page_id,))
+        connection.execute("DELETE FROM story_state_facts WHERE page_id = ?", (page_id,))
+        connection.execute("UPDATE open_threads SET status = 'open', resolved_page_id = NULL, resolved_panel_index = NULL WHERE resolved_page_id = ?", (page_id,))
+        connection.execute("DELETE FROM open_threads WHERE source_page_id = ?", (page_id,))
         connection.execute(
             "DELETE FROM character_relationships WHERE source_page_id = ?", (page_id,)
         )
@@ -459,6 +463,79 @@ def update_knowledge_base(
                     float(relationship.get("confidence", 0)),
                 ),
             )
+
+        # Store state history with evidence provenance. Uncertain observations never
+        # supersede confirmed facts; only explicit confirmed changes close prior facts.
+        for change in analysis.get("state_changes", []):
+            subject = str(change.get("subject", "")).strip()
+            attribute = str(change.get("attribute", "")).strip()
+            value = str(change.get("value", "")).strip()
+            certainty = str(change.get("certainty", "uncertain")).strip().lower()
+            if not subject or not attribute or not value:
+                continue
+            confirmed = certainty == "confirmed"
+            status = "active" if confirmed else "uncertain"
+            panel_index = int(change.get("panel_index", -1))
+            fact_id = _stable_id("state-fact", page_id, subject.casefold(), attribute.casefold(), value, panel_index)
+            if confirmed:
+                connection.execute(
+                    """UPDATE story_state_facts SET status = 'superseded', valid_to_page_id = ?
+                       WHERE project_id = ? AND subject = ? AND attribute = ?
+                         AND status = 'active' AND page_id != ?
+                         AND ((SELECT c.chapter_index FROM pages p JOIN chapters c
+                               ON c.project_id=p.project_id AND c.chapter_id=p.chapter_id
+                               WHERE p.page_id=story_state_facts.page_id) <
+                              (SELECT c.chapter_index FROM pages p JOIN chapters c
+                               ON c.project_id=p.project_id AND c.chapter_id=p.chapter_id
+                               WHERE p.page_id=?) OR
+                              ((SELECT c.chapter_index FROM pages p JOIN chapters c
+                                ON c.project_id=p.project_id AND c.chapter_id=p.chapter_id
+                                WHERE p.page_id=story_state_facts.page_id) =
+                               (SELECT c.chapter_index FROM pages p JOIN chapters c
+                                ON c.project_id=p.project_id AND c.chapter_id=p.chapter_id
+                                WHERE p.page_id=?) AND
+                               (SELECT page_index FROM pages WHERE page_id=story_state_facts.page_id) <
+                               (SELECT page_index FROM pages WHERE page_id=?)))""",
+                    (page_id, project_id, subject, attribute, page_id, page_id, page_id, page_id),
+                )
+            connection.execute(
+                """INSERT INTO story_state_facts(
+                    fact_id, project_id, chapter_id, page_id, subject, attribute,
+                    value, status, certainty, confidence, panel_index
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fact_id) DO UPDATE SET value=excluded.value,
+                    status=excluded.status, certainty=excluded.certainty,
+                    confidence=excluded.confidence""",
+                (fact_id, project_id, chapter_id, page_id, subject, attribute,
+                 value, status, certainty, float(change.get("confidence", 0)), panel_index),
+            )
+
+        for thread in analysis.get("new_open_threads", []):
+            description = str(thread.get("description", "")).strip()
+            if not description:
+                continue
+            panel_index = int(thread.get("panel_index", -1))
+            thread_id = _stable_id("open-thread", project_id, description.casefold(), page_id)
+            connection.execute(
+                """INSERT INTO open_threads(thread_id, project_id, description, thread_type,
+                    status, source_page_id, source_panel_index, confidence)
+                   VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
+                   ON CONFLICT(project_id, description, source_page_id) DO UPDATE SET
+                    thread_type=excluded.thread_type, status='open',
+                    source_panel_index=excluded.source_panel_index,
+                    confidence=excluded.confidence""",
+                (thread_id, project_id, description, str(thread.get("thread_type", "mystery")),
+                 page_id, panel_index, float(thread.get("confidence", 0))),
+            )
+        for resolved in analysis.get("resolved_threads", []):
+            description = str(resolved.get("description", "")).strip()
+            if description:
+                connection.execute(
+                    """UPDATE open_threads SET status='resolved', resolved_page_id=?,
+                        resolved_panel_index=? WHERE project_id=? AND status='open'
+                        AND description=?""",
+                    (page_id, int(resolved.get("panel_index", -1)), project_id, description),
+                )
 
     index_records = rebuild_project_index(database, project_id)
     return {
