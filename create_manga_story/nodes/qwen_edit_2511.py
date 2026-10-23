@@ -1,7 +1,3 @@
-import torch
-import folder_paths
-from nodes import NODE_CLASS_MAPPINGS
-
 def execute_node_safely(node_instance, **kwargs):
     """自动获取 ComfyUI 节点中由 FUNCTION 指定的主函数并执行"""
     func_name = getattr(node_instance, "FUNCTION", None)
@@ -16,6 +12,8 @@ def get_core_nodes():
     This keeps plugin discovery and unit tests working on ComfyUI builds that do
     not provide the Qwen Image Edit node set.
     """
+    from nodes import NODE_CLASS_MAPPINGS
+
     required = (
         "UNETLoader", "CLIPLoader", "VAELoader", "FluxKontextImageScale",
         "TextEncodeQwenImageEditPlus", "ModelSamplingAuraFlow", "CFGNorm",
@@ -32,6 +30,8 @@ def get_core_nodes():
 class QwenImageEditCustomNode:
     @classmethod
     def INPUT_TYPES(s):
+        import folder_paths
+
         return {
             "required": {
                 "image1": ("IMAGE",),
@@ -55,6 +55,8 @@ class QwenImageEditCustomNode:
     CATEGORY = "QwenImageEdit"
 
     def edit_image(self, image1, prompt, unet_name, clip_name, vae_name, seed, steps, cfg, image2=None, image3=None):
+        import torch
+
         nodes = get_core_nodes()
 
         # 1. 加载模型

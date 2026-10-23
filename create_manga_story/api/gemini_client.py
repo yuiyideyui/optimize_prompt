@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..core.schemas import GEMINI_RESPONSE_SCHEMA, validate_analysis
 
@@ -136,3 +136,81 @@ def analyze_image(
     except (KeyError, IndexError, TypeError, json.JSONDecodeError):
         raise ValueError("Gemini returned a missing or invalid JSON analysis.") from None
     return validate_analysis(result)
+
+
+
+def generate_structured_json(
+    prompt: str,
+    model: str,
+    api_key: str,
+    base_url: str,
+    timeout: int,
+    images: Optional[Iterable[Tuple[bytes, str]]] = None,
+    response_schema: Optional[Dict[str, Any]] = None,
+    max_retries: int = 2,
+) -> Dict[str, Any]:
+    """Call Gemini with text and optional actual image bytes, then parse strict JSON."""
+    if not api_key.strip():
+        raise ValueError("Set GEMINI_API_KEY in the ComfyUI process environment.")
+    if not model.strip() or not prompt.strip():
+        raise ValueError("Gemini model and prompt are required.")
+    if timeout < 1 or max_retries < 0 or max_retries > 5:
+        raise ValueError("Invalid timeout or max_retries.")
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    for image_bytes, mime_type in images or ():
+        if not isinstance(image_bytes, bytes) or not image_bytes:
+            raise ValueError("Gemini image input must contain non-empty bytes.")
+        if mime_type not in ("image/png", "image/jpeg", "image/webp"):
+            raise ValueError("Gemini image input must be PNG, JPEG, or WEBP.")
+        parts.append({"inline_data": {
+            "mime_type": mime_type,
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+        }})
+    generation_config: Dict[str, Any] = {"responseMimeType": "application/json"}
+    if response_schema:
+        generation_config["responseSchema"] = response_schema
+    request = urllib.request.Request(
+        _endpoint(base_url, model, api_key),
+        data=json.dumps({
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": generation_config,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    payload = None
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt >= max_retries:
+                error.close()
+                raise RuntimeError("Gemini API returned HTTP {}.".format(error.code)) from None
+            error.close()
+        except urllib.error.URLError as error:
+            if attempt >= max_retries:
+                raise RuntimeError("Gemini API request failed: {}.".format(error.reason)) from None
+        time.sleep(min(2 ** attempt, 8))
+    try:
+        candidate = payload["candidates"][0]
+        if candidate.get("finishReason") in ("SAFETY", "RECITATION", "BLOCKLIST"):
+            raise ValueError("Gemini declined the structured request.")
+        text = "".join(
+            part["text"]
+            for part in candidate["content"]["parts"]
+            if isinstance(part.get("text"), str)
+        )
+        if not text.strip():
+            raise ValueError("Gemini returned an empty structured response.")
+        result = json.loads(text, parse_constant=_reject_json_constant)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Gemini returned a missing or invalid structured JSON response.") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Gemini response must be a JSON object.")
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError("Gemini returned a non-finite JSON number: {}.".format(value))

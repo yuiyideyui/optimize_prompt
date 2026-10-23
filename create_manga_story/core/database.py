@@ -6,6 +6,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, Optional
 
+from .asset_schema import initialize_asset_schema
+from .workflow_schema import initialize_workflow_schema
+
 
 class ComicDatabase:
     def __init__(self, database_path: Path):
@@ -279,6 +282,8 @@ class ComicDatabase:
                     ON open_threads(project_id, status);
                 """
             )
+            initialize_asset_schema(connection)
+            initialize_workflow_schema(connection)
             chapter_columns = {row["name"] for row in connection.execute("PRAGMA table_info(chapters)")}
             if "chapter_index" not in chapter_columns:
                 connection.execute("ALTER TABLE chapters ADD COLUMN chapter_index INTEGER")
