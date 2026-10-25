@@ -5,6 +5,7 @@ import io
 import json
 import math
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.gemini_client import generate_structured_json
@@ -72,7 +73,9 @@ _QC_SCHEMA = {
                 "required": ["category", "result", "severity", "evidence"],
             },
         },
-        "failures": {"type": "ARRAY"},
+        # Gemini requires an item schema for every ARRAY property.  These are
+        # deliberately strings so QC can cite concise, human-readable defects.
+        "failures": {"type": "ARRAY", "items": {"type": "STRING"}},
         "uncertainties": {"type": "ARRAY", "items": {"type": "STRING"}},
         "prompt_revision_instructions": {
             "type": "ARRAY", "items": {"type": "STRING"}
@@ -112,6 +115,294 @@ def _optional_image_part(image: Any) -> Optional[Tuple[bytes, str]]:
     if image is None:
         return None
     return _single_image_bytes(image)
+
+
+def _formal_reference_ids(manifest: List[Dict[str, Any]]) -> List[str]:
+    """Return only persisted asset IDs, excluding transient page references."""
+    return [
+        item["asset_id"]
+        for item in manifest
+        if item.get("reference_kind", "asset") == "asset"
+    ]
+
+
+def _validated_entity_relation(repo: Any, project_id: str, entity_type: Any, entity_id: Any):
+    """Return a safe relation target; unresolved page entities stay unbound."""
+    if not isinstance(entity_type, str) or not isinstance(entity_id, str):
+        return None, None, "missing_entity"
+    table_by_type = {
+        "character": ("characters", "character_id"),
+        "location": ("locations", "location_id"),
+        "character_appearance": ("character_appearances", "appearance_id"),
+        "location_state": ("location_states", "state_id"),
+    }
+    table_info = table_by_type.get(entity_type)
+    if table_info is None:
+        return None, None, "unsupported_entity_type"
+    table, key = table_info
+    with repo.database.connect() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM {} WHERE {} = ? AND project_id = ?".format(table, key),
+            (entity_id, project_id),
+        ).fetchone()
+    if row is None:
+        return None, None, "entity_not_found"
+    return entity_type, entity_id, "valid"
+
+
+def _reusable_generation(repo: Any, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Find a successful candidate generated from the same comic-page hash."""
+    page_hash = request.get("source_page_hash")
+    if not isinstance(page_hash, str) or not page_hash.strip():
+        return None
+    with repo.database.connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM asset_generation_runs WHERE project_id = ? "
+            "AND status = 'succeeded' ORDER BY created_at DESC",
+            (request.get("project_id"),),
+        ).fetchall()
+        for row in rows:
+            request_type = str(request.get("asset_type", ""))
+            if row["asset_type"] != request_type and not (
+                request_type.startswith("character")
+                and str(row["asset_type"]).startswith("character")
+            ):
+                continue
+            try:
+                parameters = json.loads(row["parameters_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            outputs = connection.execute(
+                "SELECT a.* FROM asset_generation_outputs o JOIN assets a ON a.asset_id=o.asset_id "
+                "WHERE o.run_id=? ORDER BY o.output_index", (row["run_id"],)
+            ).fetchall()
+            if not outputs:
+                continue
+            same_page = parameters.get("source_page_hash") == page_hash
+            request_page_id = request.get("source_page_id")
+            if not same_page and request_page_id:
+                same_page = parameters.get("source_page_id") == request_page_id
+                if not same_page:
+                    for output in outputs:
+                        try:
+                            metadata = json.loads(output["metadata_json"] or "{}")
+                        except json.JSONDecodeError:
+                            continue
+                        manifest = metadata.get("reference_manifest", [])
+                        if isinstance(manifest, list) and any(
+                            item.get("source_page_id") == request_page_id
+                            for item in manifest if isinstance(item, dict)
+                        ):
+                            same_page = True
+                            break
+            if not same_page:
+                continue
+            if parameters.get("entity_type") != request.get("entity_type"):
+                continue
+            old_identity = parameters.get("identity_key")
+            new_identity = request.get("identity_key")
+            if old_identity and new_identity:
+                if old_identity != new_identity:
+                    continue
+            elif parameters.get("entity_id") != request.get("entity_id"):
+                continue
+            return {"run_id": row["run_id"], "assets": [dict(item) for item in outputs]}
+    return None
+
+
+_PRIMARY_REFERENCE_DIRECTIVE = (
+    "PRIMARY REFERENCE RULE: image1 is the single source of truth and the primary "
+    "edit target. Preserve image1's subject identity, subject count, silhouette, "
+    "composition, camera angle, spatial layout, architecture, colors, lighting, "
+    "and visual style. Make only the requested refinement or completion. Do not "
+    "redesign the subject, change its identity, move important elements, add "
+    "unrelated people or objects, include other comic panels, or copy speech "
+    "bubbles and panel borders. image2 and image3 are supplementary only and "
+    "must never override image1."
+)
+
+
+def _qwen2_extraction_directive(request: Dict[str, Any]) -> str:
+    """Constrain character generation to source-faithful extraction/cleanup."""
+    asset_type = str(request.get("asset_type", ""))
+    if asset_type.startswith("character"):
+        return (
+            "CHARACTER EXTRACTION MODE: Extract only the requested character from "
+            "<image1>. Keep the exact face, hairstyle, body proportions, clothing, "
+            "pose, accessories, expression, colors, and recognizable details. Remove "
+            "the comic panel, speech bubbles, text, background, and unrelated people "
+            "or objects. Replace the entire background with uniform pure white (#FFFFFF). "
+            "AUTOMATIC FULL-BODY CHARACTER SHEET: Create one clean reference sheet "
+            "showing the same character as a complete head-to-toe human figure. The "
+            "EXACTLY THREE complete head-to-toe views in this left-to-right order: "
+            "front view, true side profile, and back view. Show the entire body, including head, "
+            "neck, shoulders, torso, arms, hands, hips, legs, feet, shoes, clothing, "
+            "and accessories. Do not add extra character views or a facial-expression row. Keep "
+            "the same identity, clothing, hair, proportions, anatomy, and accessories "
+            "across every view. If the front, side, back, full-body, or clothing "
+            "details are missing from <image1>, use the comic page and supplementary "
+            "references as evidence and infer them conservatively; do not invent a new "
+            "costume, body type, face, or accessories. Never output only a headshot, "
+            "bust, half-body crop, or floating head. "
+            "Use <image1> as the sole authority for the visual style. Preserve the exact "
+            "style visible in <image1>: line art, ink weight, cel shading "
+            "or painterly shading, palette, texture, proportions, facial rendering, and "
+            "level of detail. Do not convert it to photorealism, 3D, western comic, anime "
+            "of another style, or a different illustration style. Only improve clarity "
+            "and clean edges. Do not redesign, beautify, age, recolor, or invent the "
+            "character. The comic crop may be low-resolution or blurry. Automatically "
+            "reconstruct and clarify obscured facial features, hair, hands, clothing edges, "
+            "and missing parts using the clearest supplied references, while staying faithful "
+            "to the same character and manga style. Do not merely upscale blur or copy "
+            "unreadable artifacts. This is a controlled cleanup/extraction, not a new illustration."
+        )
+    if asset_type.startswith("scene") or asset_type.startswith("location"):
+        try:
+            reference_quality = float(request.get("reference_quality", 1.0))
+        except (TypeError, ValueError):
+            reference_quality = 1.0
+        crop = request.get("crop_box")
+        try:
+            crop_area = float(crop.get("width", 0)) * float(crop.get("height", 0))
+        except (AttributeError, TypeError, ValueError):
+            crop_area = 1.0
+        reconstruction = (
+            reference_quality < 0.65 or crop_area < 0.06
+        )
+        reconstruction_text = (
+            " The selected scene crop is small or unclear. Reconstruct the visible "
+            "architecture and terrain conservatively from the crop plus the "
+            "supplementary full-page context reference. This is an image-edit "
+            "reconstruction, not a literal upscale: restore clean edges, readable "
+            "forms, depth and texture while preserving the exact manga linework, "
+            "palette, shading, lighting, perspective and composition. Do not invent "
+            "a different castle, location, era or art style."
+            if reconstruction else ""
+        )
+        return (
+            "SCENE EXTRACTION MODE: Extract and clean the requested location from "
+            "<image1>. Preserve the exact architecture, terrain, layout, camera angle, "
+            "perspective, scale relationships, lighting, colors, and distinctive details. "
+            "Remove every visible person and character, including background people, "
+            "speech bubbles, text, comic panel borders, and unrelated objects. Do not "
+            "preserve a person merely because they appear in the source panel. Use <image1> as the sole "
+            "authority for the visual style. Preserve the exact style visible in <image1>: "
+            "line art, ink weight, palette, shading method, texture, "
+            "perspective treatment, and detail density. Do not convert it to photorealism, "
+            "3D, western comic, or another illustration style. Only improve clarity and "
+            "clean edges. Do not invent a new environment or change the composition. This "
+            "The comic crop may be low-resolution or blurry. Automatically restore clear "
+            "architecture, edges, textures, and depth from the supplied references, while "
+            "preserving the exact manga design and camera composition. Do not merely upscale "
+            "blur or retain unreadable text artifacts. This is a controlled scene extraction "
+            "and cleanup, not a new illustration."
+            + reconstruction_text
+        )
+    return (
+        "CONTROLLED EXTRACTION MODE: Extract only the requested asset from <image1> "
+        "and lightly optimize clarity. Preserve its identity, shape, composition, "
+        "colors, structure, and the exact visual style visible in <image1>, including line "
+        "art, shading, palette, texture, and proportions. Remove comic text and borders. "
+        "Do not convert to photorealistic, 3D, or another art style. Do not create a new "
+        "unrelated image or invent details."
+    )
+
+
+def _normalized_crop_box(value: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(value, dict):
+        return None
+    try:
+        x = float(value["x"])
+        y = float(value["y"])
+        width = float(value["width"])
+        height = float(value["height"])
+        padding = float(value.get("padding", 0.0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in (x, y, width, height, padding)):
+        return None
+    if width <= 0 or height <= 0 or padding < 0:
+        return None
+    left = max(0.0, x - padding)
+    top = max(0.0, y - padding)
+    right = min(1.0, x + width + padding)
+    bottom = min(1.0, y + height + padding)
+    if right <= left or bottom <= top:
+        return None
+    return {
+        "x": left,
+        "y": top,
+        "width": right - left,
+        "height": bottom - top,
+        "padding": 0.0,
+    }
+
+
+def _crop_pil_image(image: Any, crop_box: Optional[Dict[str, float]]) -> Any:
+    if crop_box is None:
+        return image
+    width, height = image.size
+    left = max(0, min(width - 1, int(round(crop_box["x"] * width))))
+    top = max(0, min(height - 1, int(round(crop_box["y"] * height))))
+    right = max(left + 1, min(width, int(round((crop_box["x"] + crop_box["width"]) * width))))
+    bottom = max(top + 1, min(height, int(round((crop_box["y"] + crop_box["height"]) * height))))
+    return image.crop((left, top, right, bottom))
+
+
+def _stack_batch_images(images: List[Any]) -> Any:
+    """Return all generated ComfyUI images as one IMAGE batch tensor."""
+    if not images:
+        return None
+    import numpy as np
+
+    arrays = []
+    use_torch = any(hasattr(image, "detach") for image in images)
+    for image in images:
+        array = image.detach().cpu().numpy() if hasattr(image, "detach") else np.asarray(image)
+        if array.ndim == 3:
+            array = array[np.newaxis, ...]
+        if array.ndim != 4 or array.shape[-1] not in (1, 3, 4):
+            raise ValueError("Generated IMAGE must have shape [batch,height,width,channels].")
+        # ComfyUI's IMAGE convention is RGB.  Different backends can return
+        # RGB, RGBA, or grayscale tensors; normalize them before padding and
+        # concatenating the batch instead of dropping the whole batch.
+        if array.shape[-1] == 1:
+            array = np.repeat(array, 3, axis=3)
+        elif array.shape[-1] == 4:
+            array = array[..., :3]
+        array = array.astype(np.float32, copy=False)
+        arrays.append(array)
+    max_height = max(array.shape[1] for array in arrays)
+    max_width = max(array.shape[2] for array in arrays)
+    channels = 3
+    padded = []
+    for array in arrays:
+        if array.shape[3] != channels:
+            raise ValueError("Generated IMAGE normalization failed.")
+        canvas = np.zeros(
+            (array.shape[0], max_height, max_width, channels), dtype=np.float32
+        )
+        canvas[:, :array.shape[1], :array.shape[2], :] = array
+        padded.append(canvas)
+    result = np.concatenate(padded, axis=0)
+    if use_torch:
+        import torch
+        return torch.from_numpy(result)
+    return result
+
+
+def _load_asset_image(asset: Dict[str, Any]) -> Any:
+    """Load a persisted PNG asset back into a ComfyUI IMAGE tensor."""
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    path = _repository().resolve_asset_path(asset)
+    if not path.is_file():
+        raise FileNotFoundError("Cached asset file does not exist: {}".format(path))
+    with Image.open(path) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    return torch.from_numpy(pixels[None, ...])
 
 
 def _validate_prompt_response(result: Dict[str, Any], manifest: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -154,6 +445,15 @@ def _validate_qc_response(result: Dict[str, Any], threshold: float) -> Dict[str,
     if decision not in ("PASS", "RETRY", "NEEDS_HUMAN_REVIEW", "ERROR"):
         raise ValueError("Gemini QC decision is invalid.")
     score = result.get("overall_score")
+    if isinstance(score, str):
+        try:
+            score = float(score.strip().rstrip("%"))
+        except ValueError:
+            score = None
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        if 1 < score <= 100:
+            score = score / 100.0
+        result["overall_score"] = score
     if (
         isinstance(score, bool)
         or not isinstance(score, (int, float))
@@ -207,6 +507,16 @@ def _validate_qc_response(result: Dict[str, Any], threshold: float) -> Dict[str,
     return result
 
 
+def _error_code(exc: BaseException) -> str:
+    """Map local/model failures to a stable workflow error category."""
+    message = str(exc).lower()
+    if any(token in message for token in ("timeout", "timed out", "rate limit", "connection")):
+        return "QC_API_ERROR"
+    if any(token in message for token in ("model", "cuda", "out of memory", "sampl")):
+        return "IMAGE_GENERATION_ERROR"
+    return "QC_INVALID_RESPONSE"
+
+
 class ComicAssetReferenceSelector:
     @classmethod
     def INPUT_TYPES(cls):
@@ -241,15 +551,23 @@ class ComicAssetReferenceSelector:
             raise ValueError("Select between one and three references; QwenEdit supports three.")
         if any(
             not isinstance(ref, dict)
-            or not isinstance(ref.get("asset_id"), str)
-            or not ref["asset_id"].strip()
+            or not (
+                isinstance(ref.get("asset_id"), str) and ref["asset_id"].strip()
+                or isinstance(ref.get("source_page_id"), str)
+                and ref["source_page_id"].strip()
+            )
             or not isinstance(ref.get("role"), str)
             or not ref["role"].strip()
             or not isinstance(ref.get("reason", ""), str)
             for ref in references
         ):
-            raise ValueError("Each reference requires asset_id, role, and an optional reason.")
-        ids = [ref["asset_id"] for ref in references]
+            raise ValueError(
+                "Each reference requires asset_id or source_page_id, role, and an optional reason."
+            )
+        ids = [
+            ref.get("asset_id") or "page-source:" + ref["source_page_id"]
+            for ref in references
+        ]
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate reference assets are not allowed.")
         repo = _repository()
@@ -263,6 +581,96 @@ class ComicAssetReferenceSelector:
         images: List[Any] = []
         manifest = []
         for index, ref in enumerate(references):
+            source_page_id = ref.get("source_page_id")
+            if isinstance(source_page_id, str) and source_page_id.strip():
+                with repo.database.connect() as connection:
+                    page_row = connection.execute(
+                        "SELECT page_id, project_id, image_path FROM pages "
+                        "WHERE page_id = ? AND project_id = ?",
+                        (source_page_id.strip(), project_id),
+                    ).fetchone()
+                if page_row is None:
+                    raise ValueError(
+                        "Source page {} does not belong to project {}.".format(
+                            source_page_id, project_id
+                        )
+                    )
+                path = Path(page_row["image_path"])
+                raw = path.read_bytes()
+                with Image.open(io.BytesIO(raw)) as decoded:
+                    decoded.load()
+                    crop_box = _normalized_crop_box(ref.get("crop_box"))
+                    cropped = _crop_pil_image(decoded.convert("RGB"), crop_box)
+                    pixels = np.asarray(cropped, dtype=np.float32) / 255.0
+                    width, height = cropped.size
+                    crop_bytes = io.BytesIO()
+                    cropped.save(crop_bytes, format="PNG")
+                    raw = crop_bytes.getvalue()
+                images.append(torch.from_numpy(pixels[None, ...]))
+                manifest.append(
+                    {
+                        "asset_id": "page-source:" + source_page_id.strip(),
+                        "source_page_id": source_page_id.strip(),
+                        "reference_kind": "page_source_crop" if crop_box else "page_source",
+                        "version_hash": hashlib.sha256(raw).hexdigest(),
+                        "asset_type": "panel_reference",
+                        "asset_uri": str(path),
+                        "status": "source_page",
+                        "role": ref["role"],
+                        "reason": ref.get("reason", ""),
+                        "port": "image{}".format(index + 1),
+                        "mime_type": "image/png",
+                        "width": width,
+                        "height": height,
+                        "crop_box": crop_box,
+                    }
+                )
+                # For a distant/blurry scene, image1 remains the exact crop
+                # to edit, while image2 supplies page-level composition and
+                # manga-style context. This prevents Qwen from mistaking a
+                # tiny castle crop for an unrelated foreground object.
+                asset_type = str(request.get("asset_type", ""))
+                try:
+                    reference_quality = float(request.get("reference_quality", 1.0))
+                except (TypeError, ValueError):
+                    reference_quality = 1.0
+                crop_area = 1.0
+                if isinstance(crop_box, dict):
+                    crop_area = float(crop_box.get("width", 0.0)) * float(
+                        crop_box.get("height", 0.0)
+                    )
+                if (
+                    len(images) == 1
+                    and (asset_type.startswith("scene") or asset_type.startswith("location"))
+                    and (reference_quality < 0.65 or crop_area < 0.06)
+                ):
+                    with Image.open(io.BytesIO(path.read_bytes())) as full_page:
+                        full_page.load()
+                        full = full_page.convert("RGB")
+                        full_pixels = np.asarray(full, dtype=np.float32) / 255.0
+                        full_bytes = io.BytesIO()
+                        full.save(full_bytes, format="PNG")
+                    images.append(torch.from_numpy(full_pixels[None, ...]))
+                    manifest.append(
+                        {
+                            "asset_id": "page-source-full:" + source_page_id.strip(),
+                            "source_page_id": source_page_id.strip(),
+                            "reference_kind": "page_source_full_context",
+                            "version_hash": hashlib.sha256(full_bytes.getvalue()).hexdigest(),
+                            "asset_type": "panel_reference",
+                            "asset_uri": str(path),
+                            "status": "source_page",
+                            "role": "style_and_composition_context",
+                            "reason": "Supplementary full-page context for a small or unclear scene crop.",
+                            "port": "image2",
+                            "mime_type": "image/png",
+                            "width": full.width,
+                            "height": full.height,
+                            "crop_box": None,
+                        }
+                    )
+                continue
+
             asset = repo.get_asset(ref["asset_id"], project_id)
             if asset["status"] != "approved":
                 raise ValueError("Only approved assets can be used as formal references.")
@@ -343,6 +751,7 @@ class ComicAssetReferenceSelector:
             manifest.append(
                 {
                     "asset_id": asset["asset_id"],
+                    "reference_kind": "asset",
                     "version_hash": asset["file_hash"],
                     "asset_type": asset["asset_type"],
                     "asset_uri": asset["relative_path"],
@@ -422,14 +831,22 @@ class GeminiAssetPromptGenerator:
                 raise ValueError("Selected reference IMAGE is not connected to Gemini.")
             parts.append(_single_image_bytes(image))
         prompt_text = (
-            "Create a Qwen-Image-Edit 2511 image-edit prompt from this structured asset request. "
-            "Use only stated evidence; do not invent facts. Treat reference roles separately. "
-            "Do not alter established identity or source knowledge. Put unresolved facts in "
-            "uncertainties. Return the required JSON.\\nASSET_REQUEST:\\n"
+            "Create a detailed Qwen-Image-Edit 2511 image-edit prompt from this asset request.\n"
+            "The detailed_description field MUST include:\n"
+            "1. EXPLICIT VISUAL DESCRIPTION: Precise colors, composition, lighting, textures, art style\n"
+            "2. REFERENCE IMAGE GUIDANCE: For each reference, state what visual elements to preserve/adapt\n"
+            "3. MANGA/COMIC CONSISTENCY: Explicitly describe which comic elements must be retained\n"
+            "4. SPATIAL & SCALE DETAILS: Positions, sizes, spatial relationships of key elements\n"
+            "5. OUTPUT QUALITY TARGET: Clear description of the final expected image quality\n\n"
+            "Use only stated evidence from images; do not invent facts. Treat reference roles "
+            "separately. Do not alter established identity or source knowledge. Put unresolved "
+            "facts in uncertainties. Return the required JSON.\n\n"
+            "ASSET_REQUEST:\n"
             + json.dumps(request, ensure_ascii=False)
-            + "\\nREFERENCE_MANIFEST:\\n"
+            + "\n\nREFERENCE_MANIFEST:\n"
             + json.dumps(manifest, ensure_ascii=False)
-            + "\\nQWEN_EDIT_INPUTS: required image1, optional image2 and image3; prompt STRING."
+            + "\n\nQWEN_EDIT_INPUTS: image1 (primary edit target, required); "
+            "image2 and image3 (optional references for style/content guidance)."
         )
         result = generate_structured_json(
             prompt_text, model, api_key, api_base_url, timeout_seconds,
@@ -767,6 +1184,32 @@ class ComicAssetWorkflowRegistrar:
             raise ValueError("QC report belongs to a different asset request.")
         if qc.get("attempt_index") != attempt_index:
             raise ValueError("QC report belongs to a different iteration.")
+        repo = _repository()
+        repo.initialize()
+        workflow = ComicWorkflowRepository(repo.database)
+        workflow.initialize()
+        if qc["decision"] != "PASS":
+            status = {
+                "RETRY": "retry_pending",
+                "NEEDS_HUMAN_REVIEW": "needs_human_review",
+                "ERROR": "error",
+            }[qc["decision"]]
+            workflow.save_asset_request(request["project_id"], request)
+            workflow.save_asset_iteration(
+                request["request_id"], attempt_index, prompt, manifest, qc,
+                status=status,
+            )
+            return (
+                [],
+                {
+                    "created": 0,
+                    "assets": [],
+                    "qc_decision": qc["decision"],
+                    "workflow_status": status,
+                    "registered": False,
+                    "reason": "Only QC PASS results can be registered as candidates.",
+                },
+            )
         images = _encode_comfy_images(image)
         if not images:
             raise ValueError("At least one generated IMAGE is required.")
@@ -785,8 +1228,6 @@ class ComicAssetWorkflowRegistrar:
         )
         parameters["reference_manifest"] = manifest
         parameters["qc_decision"] = qc["decision"]
-        repo = _repository()
-        repo.initialize()
         run_id = "{}-{}-{}".format(
             request["request_id"], attempt_index, uuid.uuid4().hex[:12]
         )
@@ -807,7 +1248,7 @@ class ComicAssetWorkflowRegistrar:
             model_name="Qwen-Image-Edit 2511",
             seed=seed_value,
             parameters=parameters,
-            reference_asset_ids=[item["asset_id"] for item in manifest],
+            reference_asset_ids=_formal_reference_ids(manifest),
             entity_type=entity_type,
             entity_id=entity_id,
             relation_type=request["asset_type"],
@@ -818,8 +1259,6 @@ class ComicAssetWorkflowRegistrar:
             "NEEDS_HUMAN_REVIEW": "needs_human_review",
             "ERROR": "error",
         }[qc["decision"]]
-        workflow = ComicWorkflowRepository(repo.database)
-        workflow.initialize()
         workflow.save_asset_request(request["project_id"], request)
         workflow.save_asset_iteration(
             request["request_id"], attempt_index, prompt, manifest, qc,
@@ -860,7 +1299,11 @@ class GeminiQwenAssetGenerationLoop:
                 "api_base_url": ("STRING", {"default": "https://generativelanguage.googleapis.com"}),
                 "timeout_seconds": ("INT", {"default": 120, "min": 1, "max": 600}),
                 "api_retries": ("INT", {"default": 2, "min": 0, "max": 5}),
-            }
+            },
+            "optional": {
+                "page_storyboard_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "voice_manifest_json": ("STRING", {"multiline": True, "default": "[]"}),
+            },
         }
 
     RETURN_TYPES = ("IMAGE", "COMIC_ASSET_WORKFLOW_REPORT", "STRING")
@@ -885,6 +1328,17 @@ class GeminiQwenAssetGenerationLoop:
         api_base_url: str,
         timeout_seconds: int,
         api_retries: int,
+        image_backend: str = "qwen",
+        image_api_key: str = "",
+        image_model: str = "gpt-image-1",
+        image_api_base_url: str = "https://api.openai.com/v1",
+        image_size: str = "1024x1024",
+        qwen2_resolution: int = 0,
+        qwen2_cache_device: str = "auto",
+        qwen2_cache_dtype: str = "default",
+        qwen2_negative_prompt: str = "",
+        page_storyboard_prompt: str = "",
+        voice_manifest_json: str = "[]",
     ):
         request = _json_value(asset_request, "asset_request")
         if (
@@ -899,6 +1353,7 @@ class GeminiQwenAssetGenerationLoop:
         if isinstance(seed, bool) or not 0 <= seed < 2**64:
             raise ValueError("seed must be an unsigned 64-bit integer.")
         _json_input(references_json, "references_json", list)
+        voice_manifest = _json_input(voice_manifest_json, "voice_manifest_json", list)
         image1, image2, image3, manifest, _ = ComicAssetReferenceSelector().select(
             request["project_id"], request, references_json
         )
@@ -918,15 +1373,45 @@ class GeminiQwenAssetGenerationLoop:
         workflow.initialize()
         workflow.save_asset_request(request["project_id"], request)
         prompt_task = (
-            "Create a Qwen-Image-Edit 2511 edit prompt for this asset. Use only confirmed "
-            "request facts and evidence. Keep reference roles separate; state must-preserve, "
-            "allowed changes, prohibited changes, and uncertainties. Do not invent facts. "
-            "Return the required structured JSON.\\nASSET_REQUEST:\\n"
+            "Create a detailed Qwen-Image-Edit 2511 prompt for this asset generation. "
+            "The detailed_description MUST be explicit and comprehensive:\n"
+            "1. VISUAL DETAILS: Include specific colors, composition, lighting, textures, style\n"
+            "2. REFERENCE GUIDANCE: For each reference image, state what to preserve or adapt\n"
+            "3. MANGA ELEMENTS: Clearly state which comic/manga visual elements must remain\n"
+            "4. OUTPUT CLARITY: Ensure the prompt explicitly describes the final target image\n"
+            "5. SPATIAL RELATIONSHIPS: Include positions, scales, and spatial arrangements\n\n"
+            "Use only confirmed request facts and evidence from images. Keep reference roles "
+            "separate; explicitly state must-preserve content, allowed changes, prohibited "
+            "changes, and uncertainties. Do not invent facts. Return the required JSON.\n\n"
+            "ASSET_REQUEST:\n"
             + json.dumps(request, ensure_ascii=False)
-            + "\\nREFERENCE_MANIFEST:\\n"
+            + "\n\nREFERENCE_MANIFEST:\n"
             + json.dumps(manifest, ensure_ascii=False)
-            + "\\nQWEN PORTS: image1 required; image2 and image3 optional."
+            + "\n\nQWEN INPUT PORTS: image1 (primary edit target, required); "
+            "image2 and image3 (optional reference images for style/content preservation).\n\n"
+            + _PRIMARY_REFERENCE_DIRECTIVE
         )
+        if str(request.get("asset_type", "")).startswith(("scene", "location")):
+            prompt_task += (
+                "\n\nSCENE-ONLY EVIDENCE RULE: The requested asset is a location/scene. "
+                "Ignore character names, character appearance, actions, dialogue, "
+                "and crowd descriptions found in source_evidence unless they are "
+                "needed only to remove those people. Describe and generate only the "
+                "requested environment. The final scene must contain zero people, "
+                "characters, speech bubbles, captions, readable text, logos, "
+                "watermarks, and comic panel borders."
+            )
+        if page_storyboard_prompt and page_storyboard_prompt.strip():
+            prompt_task += (
+                "\n\nCURRENT PAGE STORYBOARD CONTEXT (use only for scene/action context; "
+                "do not introduce unrequested characters, props, text, or style changes):\n"
+                + page_storyboard_prompt.strip()
+            )
+        if voice_manifest:
+            prompt_task += (
+                "\n\nVOICE MANIFEST (identity/context metadata only; never render audio labels "
+                "or text into the image):\n" + json.dumps(voice_manifest, ensure_ascii=False)
+            )
         try:
             prompt = _validate_prompt_response(
                 generate_structured_json(
@@ -947,6 +1432,18 @@ class GeminiQwenAssetGenerationLoop:
                 status="error",
             )
             raise
+        prompt["detailed_description"] = (
+            _PRIMARY_REFERENCE_DIRECTIVE + "\n\nGENERATED TASK:\n"
+            + prompt["detailed_description"]
+        )
+        if (
+            str(request.get("asset_type", "")).startswith("character")
+            or str(request.get("asset_type", "")).startswith("scene")
+            or str(request.get("asset_type", "")).startswith("location")
+        ):
+            prompt["detailed_description"] += (
+                "\n\n" + _qwen2_extraction_directive(request)
+            )
         prompt["model_name"] = gemini_model
         workflow.save_asset_iteration(
             request["request_id"], 0, prompt, manifest, status="prompt_ready"
@@ -954,23 +1451,69 @@ class GeminiQwenAssetGenerationLoop:
         attempts = []
         latest_image = None
         final_decision = "ERROR"
+        generation_model_name = (
+            image_model if image_backend == "openai_compatible"
+            else "Qwen-Image-Edit 2511"
+        )
         from .qwen_edit_2511 import QwenImageEditCustomNode
 
         for attempt_index in range(max_generation_retries + 1):
             attempt_seed = (seed + attempt_index) % (2**64)
             try:
-                latest_image = QwenImageEditCustomNode().edit_image(
-                    image1=qwen_references[0],
-                    image2=qwen_references[1] if len(qwen_references) > 1 else None,
-                    image3=qwen_references[2] if len(qwen_references) > 2 else None,
-                    prompt=prompt["detailed_description"],
-                    unet_name=unet_name,
-                    clip_name=clip_name,
-                    vae_name=vae_name,
-                    seed=attempt_seed,
-                    steps=steps,
-                    cfg=cfg,
-                )[0]
+                if image_backend == "openai_compatible":
+                    from ..api.openai_image_client import generate_openai_image_edit
+                    primary_bytes, _ = _single_image_bytes(qwen_references[0])
+                    latest_image = generate_openai_image_edit(
+                        primary_bytes,
+                        prompt["detailed_description"],
+                        image_api_key,
+                        image_model,
+                        image_api_base_url,
+                        timeout_seconds,
+                        image_size,
+                    )
+                elif image_backend == "qwen_image_2":
+                    from ..api.qwen_image_21_client import (
+                        compress_reference_for_qwen,
+                        generate_qwen_image_21_edit,
+                    )
+                    qwen_generation_references = []
+                    for reference_index, reference_image in enumerate(qwen_references):
+                        manifest_item = manifest[reference_index]
+                        if manifest_item.get("reference_kind", "asset") == "asset":
+                            reference_image = compress_reference_for_qwen(
+                                reference_image, target_width=1024, jpeg_quality=30
+                            )
+                        qwen_generation_references.append(reference_image)
+                    latest_image = generate_qwen_image_21_edit(
+                        image1=qwen_generation_references[0],
+                        image2=qwen_generation_references[1] if len(qwen_generation_references) > 1 else None,
+                        image3=qwen_generation_references[2] if len(qwen_generation_references) > 2 else None,
+                        prompt=prompt["detailed_description"],
+                        unet_name=unet_name,
+                        clip_name=clip_name,
+                        vae_name=vae_name,
+                        seed=attempt_seed,
+                        steps=steps,
+                        cfg=cfg,
+                        resolution=qwen2_resolution,
+                        cache_device=qwen2_cache_device,
+                        cache_dtype=qwen2_cache_dtype,
+                        negative_prompt=qwen2_negative_prompt,
+                    )
+                else:
+                    latest_image = QwenImageEditCustomNode().edit_image(
+                        image1=qwen_references[0],
+                        image2=qwen_references[1] if len(qwen_references) > 1 else None,
+                        image3=qwen_references[2] if len(qwen_references) > 2 else None,
+                        prompt=prompt["detailed_description"],
+                        unet_name=unet_name,
+                        clip_name=clip_name,
+                        vae_name=vae_name,
+                        seed=attempt_seed,
+                        steps=steps,
+                        cfg=cfg,
+                    )[0]
             except (RuntimeError, ValueError, OSError) as exc:
                 failed_run_id = "{}-{}-{}".format(
                     request["request_id"], attempt_index, uuid.uuid4().hex[:12]
@@ -982,16 +1525,20 @@ class GeminiQwenAssetGenerationLoop:
                     str(exc),
                     prompt=prompt["detailed_description"],
                     prompt_version=str(prompt["prompt_version"]),
-                    model_name="Qwen-Image-Edit 2511",
+                    model_name=generation_model_name,
                     seed=attempt_seed,
                     parameters={
+                        "image_backend": image_backend,
+                        "image_model": image_model,
+                        "image_api_base_url": image_api_base_url,
+                        "image_size": image_size,
                         "unet_name": unet_name,
                         "clip_name": clip_name,
                         "vae_name": vae_name,
                         "steps": steps,
                         "cfg": cfg,
                     },
-                    reference_asset_ids=[item["asset_id"] for item in manifest],
+                    reference_asset_ids=_formal_reference_ids(manifest),
                 )
                 workflow.save_asset_iteration(
                     request["request_id"], attempt_index, prompt, manifest,
@@ -1007,12 +1554,36 @@ class GeminiQwenAssetGenerationLoop:
             qc_instructions = (
                 "The first attached image is the actual latest Qwen output. The other images "
                 "are selected references. Evaluate the visible result against the exact task "
-                "and checklist. Cite concrete image evidence. Never PASS based on text alone. "
+                "and checklist. image2 is the primary source image corresponding to image1 "
+                "for this QC call; compare the generated output against it. Identity, subject "
+                "count, composition, spatial layout, architecture, lighting, colors, and "
+                "style must remain consistent. Any major drift is a FAIL. Cite concrete image "
+                "evidence. Never PASS based on text alone. "
                 "Return RETRY for fixable prompt issues; use NEEDS_HUMAN_REVIEW for ambiguity.\\n"
                 "TASK:\\n" + json.dumps(request, ensure_ascii=False)
                 + "\\nPROMPT:\\n" + json.dumps(prompt, ensure_ascii=False)
                 + "\\nREFERENCES:\\n" + json.dumps(manifest, ensure_ascii=False)
             )
+            if request.get("asset_type", "").startswith("character"):
+                qc_instructions += (
+                    "\\nCHARACTER SHEET QC REQUIREMENT: Verify that the output is a single "
+                    "pure-white-background reference sheet with exactly three full-body "
+                    "views in order: front, side, back. Reject a missing back view, extra views, or expression rows, "
+                    "headshots, busts, "
+                    "half-body crops, missing hands/feet, or floating heads. Check "
+                    "consistency of identity, hairstyle, clothing, anatomy, proportions, "
+                    "accessories, and the exact visual style from image1."
+                )
+            elif (
+                request.get("asset_type", "").startswith("scene")
+                or request.get("asset_type", "").startswith("location")
+            ):
+                qc_instructions += (
+                    "\\nSCENE CLEANUP HARD REQUIREMENT: Verify zero visible people, "
+                    "speech bubbles, captions, subtitles, logos, watermarks, readable "
+                    "comic text, and panel borders. Any such artifact is an automatic "
+                    "FAIL/RETRY; do not PASS."
+                )
             try:
                 qc = _validate_qc_response(
                     generate_structured_json(
@@ -1026,6 +1597,7 @@ class GeminiQwenAssetGenerationLoop:
             except (RuntimeError, ValueError) as exc:
                 qc = {
                     "decision": "ERROR",
+                    "error_code": _error_code(exc),
                     "overall_score": 0.0,
                     "checks": [{
                         "category": "api_or_response",
@@ -1071,7 +1643,19 @@ class GeminiQwenAssetGenerationLoop:
                         "visual_qc": qc,
                     }
                 )
+            entity_type = request.get("entity_type")
+            entity_id = request.get("entity_id")
+            if entity_type is None and isinstance(request.get("target_entity"), dict):
+                entity_type = request["target_entity"].get("entity_type")
+                entity_id = request["target_entity"].get("entity_id")
             parameters = {
+                "image_backend": image_backend,
+                "image_model": image_model,
+                "image_api_base_url": image_api_base_url,
+                "image_size": image_size,
+                "qwen2_resolution": qwen2_resolution,
+                "qwen2_cache_device": qwen2_cache_device,
+                "qwen2_cache_dtype": qwen2_cache_dtype,
                 "unet_name": unet_name,
                 "clip_name": clip_name,
                 "vae_name": vae_name,
@@ -1080,37 +1664,114 @@ class GeminiQwenAssetGenerationLoop:
                 "reference_manifest": manifest,
                 "qc_decision": qc["decision"],
                 "attempt_index": attempt_index,
+                "source_page_hash": request.get("source_page_hash"),
+                "source_page_id": request.get("source_page_id"),
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "identity_key": request.get("identity_key"),
+                "page_storyboard_prompt_attached": bool(page_storyboard_prompt.strip()),
+                "voice_manifest_count": len(voice_manifest),
             }
-            entity_type = request.get("entity_type")
-            entity_id = request.get("entity_id")
-            if entity_type is None and isinstance(request.get("target_entity"), dict):
-                entity_type = request["target_entity"].get("entity_type")
-                entity_id = request["target_entity"].get("entity_id")
-            registered = repo.register_batch(
-                project_id=request["project_id"],
-                asset_type=request["asset_type"],
-                images=encoded,
-                display_name="{} attempt {}".format(
-                    request.get("generation_goal", request["asset_type"]),
-                    attempt_index + 1,
-                ),
-                generation_run_id=run_id,
-                prompt=prompt["detailed_description"],
-                prompt_version=str(prompt["prompt_version"]),
-                model_name="Qwen-Image-Edit 2511",
-                seed=attempt_seed,
-                parameters=parameters,
-                reference_asset_ids=[item["asset_id"] for item in manifest],
-                entity_type=entity_type,
-                entity_id=entity_id,
-                relation_type=request["asset_type"],
-            )
             status = {
                 "PASS": "pass_candidate",
                 "RETRY": "retry_pending",
                 "NEEDS_HUMAN_REVIEW": "needs_human_review",
                 "ERROR": "error",
             }[qc["decision"]]
+            registered = {"assets": []}
+            if qc["decision"] == "PASS":
+                try:
+                    from ..api.seedvr2_upscaler import upscale_confirmed_image
+                    latest_image = upscale_confirmed_image(latest_image)
+                    encoded = _encode_comfy_images(latest_image)
+                    for item in encoded:
+                        item["metadata"].update(
+                            {
+                                "asset_request_id": request["request_id"],
+                                "attempt_index": attempt_index,
+                                "asset_prompt": prompt,
+                                "reference_manifest": manifest,
+                                "visual_qc": qc,
+                                "post_qc_upscale": {
+                                    "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
+                                    "resolution": 4096,
+                                    "max_resolution": 4096,
+                                    "seed": 42,
+                                    "color_correction": "lab",
+                                },
+                            }
+                        )
+                    parameters["post_qc_upscale"] = {
+                        "enabled": True,
+                        "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
+                        "vae_model": "ema_vae_fp16.safetensors",
+                        "resolution": 4096,
+                        "max_resolution": 4096,
+                        "seed": 42,
+                        "color_correction": "lab",
+                    }
+                    registration_entity_type, registration_entity_id, relation_status = (
+                        _validated_entity_relation(
+                            repo, request["project_id"], entity_type, entity_id
+                        )
+                    )
+                    if relation_status != "valid":
+                        parameters["entity_relation_warning"] = (
+                            "Candidate saved without entity relation: " + relation_status
+                        )
+                    registered = repo.register_batch(
+                        project_id=request["project_id"],
+                        asset_type=request["asset_type"],
+                        images=encoded,
+                        display_name="{} attempt {}".format(
+                            request.get("generation_goal", request["asset_type"]),
+                            attempt_index + 1,
+                        ),
+                        generation_run_id=run_id,
+                        prompt=prompt["detailed_description"],
+                        prompt_version=str(prompt["prompt_version"]),
+                        model_name=generation_model_name,
+                        seed=attempt_seed,
+                        parameters=parameters,
+                        reference_asset_ids=_formal_reference_ids(manifest),
+                        entity_type=registration_entity_type,
+                        entity_id=registration_entity_id,
+                        relation_type=request["asset_type"],
+                    )
+                except (RuntimeError, ValueError, OSError) as exc:
+                    qc["decision"] = "ERROR"
+                    qc["error_code"] = "POST_QC_UPSCALE_ERROR"
+                    qc["error"] = str(exc)
+                    qc["human_review_required"] = True
+                    qc["uncertainties"] = list(qc.get("uncertainties", [])) + [
+                        "SeedVR2 post-QC clarity pass failed; no candidate was saved."
+                    ]
+                    status = "error"
+                    repo.record_generation_failure(
+                        request["project_id"],
+                        run_id,
+                        request["asset_type"],
+                        "Post-QC SeedVR2 upscale failed: {}".format(exc),
+                        prompt=prompt["detailed_description"],
+                        prompt_version=str(prompt["prompt_version"]),
+                        model_name=generation_model_name,
+                        seed=attempt_seed,
+                        parameters=parameters,
+                        reference_asset_ids=_formal_reference_ids(manifest),
+                    )
+            else:
+                repo.record_generation_failure(
+                    request["project_id"],
+                    run_id,
+                    request["asset_type"],
+                    "QC decision: {}".format(qc["decision"]),
+                    prompt=prompt["detailed_description"],
+                    prompt_version=str(prompt["prompt_version"]),
+                    model_name="Qwen-Image-Edit 2511",
+                    seed=attempt_seed,
+                    parameters=parameters,
+                    reference_asset_ids=_formal_reference_ids(manifest),
+                )
             workflow.save_asset_iteration(
                 request["request_id"], attempt_index, prompt, manifest, qc,
                 generation_run_id=run_id, status=status,
@@ -1123,7 +1784,7 @@ class GeminiQwenAssetGenerationLoop:
                         item["asset_id"] for item in registered["assets"]
                     ],
                     "qc_report": qc,
-                    "asset_status": "candidate",
+                    "asset_status": "candidate" if qc["decision"] == "PASS" else None,
                 }
             )
             final_decision = qc["decision"]
@@ -1160,6 +1821,18 @@ class GeminiQwenAssetGenerationLoop:
                 )
                 final_decision = "ERROR"
                 break
+            revised["detailed_description"] = (
+                _PRIMARY_REFERENCE_DIRECTIVE + "\n\nREVISED TASK:\n"
+                + revised["detailed_description"]
+            )
+            if (
+                image_backend == "qwen_image_2"
+                or str(request.get("asset_type", "")).startswith("scene")
+                or str(request.get("asset_type", "")).startswith("location")
+            ):
+                revised["detailed_description"] += (
+                    "\n\n" + _qwen2_extraction_directive(request)
+                )
             revised["prompt_version"] = int(prompt["prompt_version"]) + 1
             revised["model_name"] = gemini_model
             workflow.save_asset_iteration(
@@ -1177,5 +1850,432 @@ class GeminiQwenAssetGenerationLoop:
             "all_saved_assets_are_candidates": True,
             "human_review_required": final_decision
             in ("NEEDS_HUMAN_REVIEW", "ERROR"),
+            "quality_retry_count": max(0, len(attempts) - 1),
+            "service_retry_count_per_call": api_retries,
+            "stop_reason": (
+                "QC_PASS"
+                if final_decision == "PASS"
+                else "MAX_ATTEMPTS_REACHED"
+                if attempts
+                and attempts[-1]["qc_report"].get("stop_reason")
+                == "Maximum generation retry count reached."
+                else final_decision
+            ),
         }
         return latest_image, final_report, final_decision
+
+
+class ComicAssetWorkflowStatus:
+    """Expose persisted request/iteration state for recovery and monitoring."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "request_id": ("STRING", {"default": ""}),
+            },
+            "optional": {
+                "project_id": ("STRING", {"default": ""}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("workflow_status_json",)
+    FUNCTION = "get_status"
+    CATEGORY = "Comic2Anime/Assets"
+
+    def get_status(self, request_id: str, project_id: str = ""):
+        repository = _workflow_repository()
+        status = repository.get_asset_workflow_request(
+            request_id.strip(), project_id.strip() or None
+        )
+        return (json.dumps(status, ensure_ascii=False),)
+
+
+class ComicAssetBatchGenerationLoop:
+    """Run asset requests serially while preserving failures for later review."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "requests_json": ("STRING", {"multiline": True, "default": "[]"}),
+                "unet_name": ("STRING", {"default": ""}),
+                "clip_name": ("STRING", {"default": ""}),
+                "vae_name": ("STRING", {"default": ""}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "steps": ("INT", {"default": 40, "min": 1, "max": 1000}),
+                "cfg": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 100.0}),
+                "max_generation_retries": ("INT", {"default": 3, "min": 0, "max": 3}),
+                "pass_threshold": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 1.0}),
+                "gemini_api_key": ("STRING", {"default": ""}),
+                "gemini_model": ("STRING", {"default": "gemini-2.5-flash"}),
+                "api_base_url": ("STRING", {"default": "https://generativelanguage.googleapis.com"}),
+                "timeout_seconds": ("INT", {"default": 120, "min": 1, "max": 600}),
+                "api_retries": ("INT", {"default": 2, "min": 0, "max": 5}),
+            },
+            "optional": {
+                "page_storyboard_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "voice_manifest_json": ("STRING", {"multiline": True, "default": "[]"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("batch_images", "batch_report_json", "batch_decision")
+    FUNCTION = "run_batch"
+    CATEGORY = "Comic2Anime/Assets"
+
+    def run_batch(
+        self,
+        requests_json: str,
+        unet_name: str,
+        clip_name: str,
+        vae_name: str,
+        seed: int,
+        steps: int,
+        cfg: float,
+        max_generation_retries: int,
+        pass_threshold: float,
+        gemini_api_key: str,
+        gemini_model: str,
+        api_base_url: str,
+        timeout_seconds: int,
+        api_retries: int,
+        image_backend: str = "qwen",
+        image_api_key: str = "",
+        image_model: str = "gpt-image-1",
+        image_api_base_url: str = "https://api.openai.com/v1",
+        image_size: str = "1024x1024",
+        qwen2_resolution: int = 0,
+        qwen2_cache_device: str = "auto",
+        qwen2_cache_dtype: str = "default",
+        qwen2_negative_prompt: str = "",
+        page_storyboard_prompt: str = "",
+        voice_manifest_json: str = "[]",
+    ):
+        requests = _json_input(requests_json, "requests_json", list)
+        if not requests:
+            report = {
+                "batch_decision": "NO_CHARACTERS",
+                "total": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "results": [],
+                "message": "This page contains no characters with usable entity IDs.",
+            }
+            return None, json.dumps(report, ensure_ascii=False), "NO_CHARACTERS"
+        if len(requests) > 50:
+            raise ValueError("A batch may contain at most 50 requests.")
+        loop = GeminiQwenAssetGenerationLoop()
+        results = []
+        generated_images = []
+        reused_in_batch = {}
+        for index, item in enumerate(requests):
+            if not isinstance(item, dict) or not isinstance(item.get("asset_request"), dict):
+                raise ValueError(
+                    "Each batch item requires an asset_request object and references array."
+                )
+            request = item["asset_request"]
+            references = item.get("references", [])
+            reuse_key = (
+                request.get("project_id"), request.get("source_page_hash"),
+                request.get("entity_type"), request.get("identity_key") or request.get("entity_id"),
+                request.get("asset_type"),
+            )
+            reusable = reused_in_batch.get(reuse_key) or _reusable_generation(_repository(), request)
+            if reusable is not None:
+                cached_images = []
+                for cached_asset in reusable["assets"]:
+                    try:
+                        cached_images.append(_load_asset_image(cached_asset))
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        results.append({
+                            "index": index,
+                            "request_id": request.get("request_id", ""),
+                            "decision": "ERROR",
+                            "error_code": "CACHED_ASSET_LOAD_ERROR",
+                            "error": str(exc),
+                        })
+                        cached_images = []
+                        break
+                if not cached_images:
+                    continue
+                output_index = len(generated_images)
+                generated_images.extend(cached_images)
+                results.append({
+                    "index": index,
+                    "request_id": request.get("request_id", ""),
+                    "entity_type": request.get("entity_type", ""),
+                    "entity_id": request.get("entity_id", ""),
+                    "asset_request": request,
+                    "decision": "REUSED",
+                    "reused": True,
+                    "generation_run_id": reusable["run_id"],
+                    "asset_ids": [asset["asset_id"] for asset in reusable["assets"]],
+                    "output_index": output_index,
+                    "output_count": len(cached_images),
+                    "report": {
+                        "request_id": request.get("request_id", ""),
+                        "decision": "REUSED",
+                        "asset_status": [asset["status"] for asset in reusable["assets"]],
+                        "reason": "Same comic page hash, entity, and asset type already succeeded.",
+                    },
+                })
+                continue
+            if item.get("status") == "NEEDS_REFERENCE":
+                results.append({
+                    "index": index,
+                    "request_id": request.get("request_id", ""),
+                    "entity_id": request.get("entity_id", ""),
+                    "decision": "NEEDS_REFERENCE",
+                    "error_code": "missing_approved_reference",
+                    "error": "No approved reference asset is available for this character.",
+                })
+                continue
+            if isinstance(references, str):
+                references = json.loads(references)
+            if not isinstance(references, list):
+                raise ValueError("Batch references must be an array.")
+            try:
+                image, report, decision = loop.generate(
+                    request,
+                    json.dumps(references, ensure_ascii=False),
+                    unet_name,
+                    clip_name,
+                    vae_name,
+                    (seed + index) % (2**64),
+                    steps,
+                    cfg,
+                    max_generation_retries,
+                    pass_threshold,
+                    gemini_api_key,
+                    gemini_model,
+                    api_base_url,
+                    timeout_seconds,
+                    api_retries,
+                    image_backend=image_backend,
+                    image_api_key=image_api_key,
+                    image_model=image_model,
+                    image_api_base_url=image_api_base_url,
+                    image_size=image_size,
+                    qwen2_resolution=qwen2_resolution,
+                    qwen2_cache_device=qwen2_cache_device,
+                    qwen2_cache_dtype=qwen2_cache_dtype,
+                    qwen2_negative_prompt=qwen2_negative_prompt,
+                    page_storyboard_prompt=page_storyboard_prompt,
+                    voice_manifest_json=voice_manifest_json,
+                )
+                output_index = len(generated_images)
+                if image is not None:
+                    generated_images.append(image)
+                if decision == "PASS":
+                    found = _reusable_generation(_repository(), request)
+                    if found is not None:
+                        reused_in_batch[reuse_key] = found
+                results.append({
+                    "index": index,
+                    "request_id": request.get("request_id", ""),
+                    "entity_type": request.get("entity_type", ""),
+                    "entity_id": request.get("entity_id", ""),
+                    "asset_request": request,
+                    "decision": decision,
+                    "output_index": output_index if image is not None else None,
+                    "report": report,
+                })
+            except Exception as exc:
+                results.append({
+                    "index": index,
+                    "request_id": request.get("request_id", ""),
+                    "decision": "ERROR",
+                    "error_code": _error_code(exc),
+                    "error": str(exc),
+                })
+        succeeded = sum(item["decision"] in ("PASS", "REUSED") for item in results)
+        failed = sum(item["decision"] not in ("PASS", "REUSED") for item in results)
+        batch_decision = "PASS" if failed == 0 else "PARTIAL_FAILURE" if succeeded else "ERROR"
+        character_entities = []
+        for item in results:
+            if not isinstance(item, dict) or item.get("decision") not in ("PASS", "REUSED"):
+                continue
+            request = item.get("asset_request") if isinstance(item.get("asset_request"), dict) else {}
+            entity_id = request.get("entity_id")
+            if request.get("entity_type") != "character" or not entity_id:
+                continue
+            evidence = request.get("source_evidence")
+            evidence = evidence[0] if isinstance(evidence, list) and evidence and isinstance(evidence[0], dict) else {}
+            character_entities.append({
+                "character_id": str(entity_id),
+                "entity_id": str(entity_id),
+                "character_name": evidence.get("name") or evidence.get("identity_candidate") or request.get("identity_key", ""),
+                "entity_type": "character",
+                "asset_type": request.get("asset_type", ""),
+                "decision": item.get("decision"),
+                "output_index": item.get("output_index"),
+            })
+        report = {
+            "batch_decision": batch_decision,
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": failed,
+            "results": results,
+            "output_image_count": len(generated_images),
+            "character_entity_ids": sorted({item["character_id"] for item in character_entities}),
+            "character_entities": character_entities,
+            "voice_generation_input": {
+                "source": "asset_batch_report",
+                "character_entities": character_entities,
+                "requires_entity_resolution": False,
+            },
+        }
+        return _stack_batch_images(generated_images), json.dumps(report, ensure_ascii=False), batch_decision
+
+
+class ChatGPTImageAssetBatchGenerationLoop(ComicAssetBatchGenerationLoop):
+    """Generate the selected/cropped page references through an OpenAI-compatible API."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "requests_json": ("STRING", {"multiline": True, "default": "[]"}),
+                "image_api_key": ("STRING", {"default": "", "multiline": False}),
+                "image_model": ("STRING", {"default": "gpt-image-1"}),
+                "image_api_base_url": ("STRING", {"default": "https://api.openai.com/v1"}),
+                "image_size": (["1024x1024", "1536x1024", "1024x1536", "auto"],),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "max_generation_retries": ("INT", {"default": 3, "min": 0, "max": 3}),
+                "pass_threshold": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 1.0}),
+                "gemini_api_key": ("STRING", {"default": ""}),
+                "gemini_model": ("STRING", {"default": "gemini-2.5-flash"}),
+                "api_base_url": ("STRING", {"default": "https://generativelanguage.googleapis.com"}),
+                "timeout_seconds": ("INT", {"default": 120, "min": 1, "max": 600}),
+                "api_retries": ("INT", {"default": 2, "min": 0, "max": 5}),
+            },
+            "optional": {
+                "page_storyboard_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "voice_manifest_json": ("STRING", {"multiline": True, "default": "[]"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("batch_images", "batch_report_json", "batch_decision")
+    FUNCTION = "run_chatgpt_batch"
+    CATEGORY = "Comic2Anime/Assets"
+
+    def run_chatgpt_batch(
+        self,
+        requests_json: str,
+        image_api_key: str,
+        image_model: str,
+        image_api_base_url: str,
+        image_size: str,
+        seed: int,
+        max_generation_retries: int,
+        pass_threshold: float,
+        gemini_api_key: str,
+        gemini_model: str,
+        api_base_url: str,
+        timeout_seconds: int,
+        api_retries: int,
+        page_storyboard_prompt: str = "",
+        voice_manifest_json: str = "[]",
+    ):
+        return self.run_batch(
+            requests_json,
+            "",
+            "",
+            "",
+            seed,
+            1,
+            0.0,
+            max_generation_retries,
+            pass_threshold,
+            gemini_api_key,
+            gemini_model,
+            api_base_url,
+            timeout_seconds,
+            api_retries,
+            image_backend="openai_compatible",
+            image_api_key=image_api_key,
+            image_model=image_model,
+            image_api_base_url=image_api_base_url,
+            image_size=image_size,
+            page_storyboard_prompt=page_storyboard_prompt,
+            voice_manifest_json=voice_manifest_json,
+        )
+
+
+class ComicAssetImageBatchGenerationLoop(ComicAssetBatchGenerationLoop):
+    """Single switch for ChatGPT Images and native Qwen Image 2.1 editing."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        try:
+            import folder_paths
+            diffusion = folder_paths.get_filename_list("diffusion_models")
+            text = folder_paths.get_filename_list("text_encoders")
+            vae = folder_paths.get_filename_list("vae")
+        except ImportError:
+            diffusion, text, vae = [""], [""], [""]
+        return {
+            "required": {
+                "requests_json": ("STRING", {"multiline": True, "default": "[]"}),
+                "image_backend": (["chatgpt_image", "qwen_image_2"],),
+                "image_api_key": ("STRING", {"default": ""}),
+                "image_model": ("STRING", {"default": "gpt-image-1"}),
+                "image_api_base_url": ("STRING", {"default": "https://api.openai.com/v1"}),
+                "image_size": (["1024x1024", "1536x1024", "1024x1536", "auto"],),
+                "unet_name": (diffusion,),
+                "clip_name": (text,),
+                "vae_name": (vae,),
+                "qwen2_resolution": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 32}),
+                "qwen2_cache_device": (["auto", "gpu", "cpu", "off"],),
+                "qwen2_cache_dtype": (["default", "int8", "int4"],),
+                "qwen2_negative_prompt": ("STRING", {"default": "text, watermarks, speech bubbles, comic frame"}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "steps": ("INT", {"default": 25, "min": 1, "max": 1000}),
+                "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
+                "max_generation_retries": ("INT", {"default": 3, "min": 0, "max": 3}),
+                "pass_threshold": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 1.0}),
+                "gemini_api_key": ("STRING", {"default": ""}),
+                "gemini_model": ("STRING", {"default": "gemini-2.5-flash"}),
+                "api_base_url": ("STRING", {"default": "https://generativelanguage.googleapis.com"}),
+                "timeout_seconds": ("INT", {"default": 120, "min": 1, "max": 600}),
+                "api_retries": ("INT", {"default": 2, "min": 0, "max": 5}),
+            },
+            "optional": {
+                "page_storyboard_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "voice_manifest_json": ("STRING", {"multiline": True, "default": "[]"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("batch_images", "batch_report_json", "batch_decision")
+    FUNCTION = "run_switched_batch"
+    CATEGORY = "Comic2Anime/Assets"
+
+    def run_switched_batch(
+        self, requests_json, image_backend, image_api_key, image_model,
+        image_api_base_url, image_size, unet_name, clip_name, vae_name,
+        qwen2_resolution, qwen2_cache_device, qwen2_cache_dtype,
+        qwen2_negative_prompt, seed, steps, cfg, max_generation_retries,
+        pass_threshold, gemini_api_key, gemini_model, api_base_url,
+        timeout_seconds, api_retries,
+        page_storyboard_prompt="", voice_manifest_json="[]",
+    ):
+        return self.run_batch(
+            requests_json, unet_name, clip_name, vae_name, seed, steps, cfg,
+            max_generation_retries, pass_threshold, gemini_api_key, gemini_model,
+            api_base_url, timeout_seconds, api_retries,
+            image_backend=("openai_compatible" if image_backend == "chatgpt_image" else "qwen_image_2"),
+            image_api_key=image_api_key,
+            image_model=image_model,
+            image_api_base_url=image_api_base_url,
+            image_size=image_size,
+            qwen2_resolution=qwen2_resolution,
+            qwen2_cache_device=qwen2_cache_device,
+            qwen2_cache_dtype=qwen2_cache_dtype,
+            qwen2_negative_prompt=qwen2_negative_prompt,
+            page_storyboard_prompt=page_storyboard_prompt,
+            voice_manifest_json=voice_manifest_json,
+        )

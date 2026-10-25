@@ -1,0 +1,1566 @@
+{
+  "id": "bf1f0d42-d017-4616-ae1e-6e702941b608",
+  "revision": 0,
+  "last_node_id": 48,
+  "last_link_id": 96,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "ComicChapterLoader",
+      "pos": [
+        866.6331111660891,
+        307.63049930027745
+      ],
+      "size": [
+        330,
+        281.953125
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "pages",
+          "type": "COMIC_PAGES",
+          "slot_index": 0,
+          "links": [
+            5,
+            60,
+            64
+          ]
+        },
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": [
+            2,
+            11,
+            55
+          ]
+        },
+        {
+          "name": "chapter_id",
+          "type": "STRING",
+          "slot_index": 2,
+          "links": [
+            3,
+            12
+          ]
+        },
+        {
+          "name": "import_report",
+          "type": "STRING",
+          "slot_index": 3,
+          "links": []
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "ComicChapterLoader"
+      },
+      "widgets_values": [
+        "project-1",
+        "chapter-1",
+        "natural_filename",
+        "skip",
+        "C:\\Users\\yuiyide\\Desktop\\故事"
+      ],
+      "widgets_values_named": {
+        "project_id": "project-1",
+        "chapter_id": "chapter-1",
+        "sort_order": "natural_filename",
+        "duplicate_policy": "skip",
+        "directory": "C:\\Users\\yuiyide\\Desktop\\故事"
+      }
+    },
+    {
+      "id": 3,
+      "type": "ComicPageContextBuilder",
+      "pos": [
+        1355.3757833718719,
+        526.1785514331431
+      ],
+      "size": [
+        330,
+        373.96875
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "widget": {
+            "name": "project_id"
+          },
+          "link": 2
+        },
+        {
+          "name": "chapter_id",
+          "type": "STRING",
+          "widget": {
+            "name": "chapter_id"
+          },
+          "link": 3
+        },
+        {
+          "name": "page_index",
+          "type": "INT",
+          "widget": {
+            "name": "page_index"
+          },
+          "link": 17
+        },
+        {
+          "name": "pages",
+          "type": "COMIC_PAGES",
+          "link": 64
+        }
+      ],
+      "outputs": [
+        {
+          "name": "previous_summary",
+          "type": "STRING",
+          "slot_index": 0,
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "retrieved_knowledge",
+          "type": "COMIC_KNOWLEDGE",
+          "slot_index": 1,
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "context_json",
+          "type": "STRING",
+          "slot_index": 2,
+          "links": []
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "ComicPageContextBuilder"
+      },
+      "widgets_values": [
+        "project-1",
+        "chapter-1",
+        1,
+        "当前页面的角色、场景、剧情和连续性",
+        3,
+        8,
+        9000
+      ],
+      "widgets_values_named": {
+        "project_id": "project-1",
+        "chapter_id": "chapter-1",
+        "page_index": 1,
+        "query": "当前页面的角色、场景、剧情和连续性",
+        "history_pages": 3,
+        "retrieval_limit": 8,
+        "context_budget": 9000
+      }
+    },
+    {
+      "id": 4,
+      "type": "ComicEntityResolver",
+      "pos": [
+        2247.90371771193,
+        402.43527153143555
+      ],
+      "size": [
+        330,
+        260
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "analysis",
+          "type": "COMIC_ANALYSIS",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "entity_resolution",
+          "type": "COMIC_ENTITY_RESOLUTION",
+          "slot_index": 0,
+          "links": [
+            9,
+            54
+          ]
+        },
+        {
+          "name": "resolution_json",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": []
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "ComicEntityResolver"
+      },
+      "widgets_values": [
+        0.35,
+        0.9,
+        "{}"
+      ],
+      "widgets_values_named": {
+        "review_threshold": 0.35,
+        "auto_confirm_threshold": 0.9,
+        "review_decisions": "{}"
+      }
+    },
+    {
+      "id": 5,
+      "type": "GeminiComicPageAnalyzer",
+      "pos": [
+        1790.7184518913953,
+        271.7777845594618
+      ],
+      "size": [
+        400,
+        357.953125
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pages",
+          "type": "COMIC_PAGES",
+          "link": 5
+        },
+        {
+          "name": "retrieved_knowledge",
+          "shape": 7,
+          "type": "COMIC_KNOWLEDGE",
+          "link": 6
+        },
+        {
+          "name": "page_index",
+          "type": "INT",
+          "widget": {
+            "name": "page_index"
+          },
+          "link": 18
+        },
+        {
+          "name": "previous_summary",
+          "type": "STRING",
+          "widget": {
+            "name": "previous_summary"
+          },
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "analysis",
+          "type": "COMIC_ANALYSIS",
+          "links": [
+            4,
+            8
+          ]
+        },
+        {
+          "name": "analysis_json",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "saved_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "GeminiComicPageAnalyzer"
+      },
+      "widgets_values": [
+        1,
+        "YOUR_GEMINI_API_KEY_HERE",
+        "",
+        "gemini-2.5-flash",
+        "https://generativelanguage.googleapis.com",
+        240,
+        2
+      ],
+      "widgets_values_named": {
+        "page_index": 1,
+        "api_key": "YOUR_GEMINI_API_KEY_HERE",
+        "previous_summary": "",
+        "model": "gemini-2.5-flash",
+        "api_base_url": "https://generativelanguage.googleapis.com",
+        "timeout_seconds": 240,
+        "max_retries": 2
+      }
+    },
+    {
+      "id": 6,
+      "type": "ComicKnowledgeBaseUpdater",
+      "pos": [
+        2645.3277472529453,
+        287.56325676092774
+      ],
+      "size": [
+        320,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "analysis",
+          "type": "COMIC_ANALYSIS",
+          "link": 8
+        },
+        {
+          "name": "entity_resolution",
+          "type": "COMIC_ENTITY_RESOLUTION",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "update_report",
+          "type": "COMIC_KB_UPDATE_REPORT",
+          "slot_index": 0,
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "report_json",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": []
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "ComicKnowledgeBaseUpdater"
+      }
+    },
+    {
+      "id": 7,
+      "type": "ComicChapterSummarizer",
+      "pos": [
+        3064.7548527216954,
+        463.96248777899416
+      ],
+      "size": [
+        320,
+        220
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "update_report",
+          "shape": 7,
+          "type": "COMIC_KB_UPDATE_REPORT",
+          "link": 10
+        },
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "widget": {
+            "name": "project_id"
+          },
+          "link": 11
+        },
+        {
+          "name": "chapter_id",
+          "type": "STRING",
+          "widget": {
+            "name": "chapter_id"
+          },
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "chapter_summary",
+          "type": "COMIC_CHAPTER_SUMMARY",
+          "slot_index": 0,
+          "links": [
+            25
+          ]
+        },
+        {
+          "name": "summary_json",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": []
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "1c3f4231c7a8f1093134713ef6e80df884e8d60f",
+        "Node name for S&R": "ComicChapterSummarizer"
+      },
+      "widgets_values": [
+        "project-1",
+        "chapter-1"
+      ],
+      "widgets_values_named": {
+        "project_id": "project-1",
+        "chapter_id": "chapter-1"
+      }
+    },
+    {
+      "id": 10,
+      "type": "easy forLoopStart",
+      "pos": [
+        441.75232206145307,
+        -119.84373039611455
+      ],
+      "size": [
+        270,
+        146
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "initial_value1",
+          "shape": 7,
+          "type": "*",
+          "link": 24
+        },
+        {
+          "name": "initial_value2",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "flow",
+          "shape": 5,
+          "type": "FLOW_CONTROL",
+          "links": [
+            19
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "links": []
+        },
+        {
+          "name": "value2",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy forLoopStart"
+      },
+      "widgets_values": [
+        1
+      ],
+      "widgets_values_named": {
+        "total": 1
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 11,
+      "type": "easy mathInt",
+      "pos": [
+        993.5124697665309,
+        -28.851678699337228
+      ],
+      "size": [
+        270,
+        142
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "type": "INT",
+          "widget": {
+            "name": "a"
+          },
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            17,
+            18,
+            27,
+            61
+          ]
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy mathInt"
+      },
+      "widgets_values": [
+        0,
+        1,
+        "add"
+      ],
+      "widgets_values_named": {
+        "a": 0,
+        "b": 1,
+        "operation": "add"
+      }
+    },
+    {
+      "id": 12,
+      "type": "easy forLoopEnd",
+      "pos": [
+        3654.20270047942,
+        -126.61959007629034
+      ],
+      "size": [
+        225,
+        142
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "flow",
+          "shape": 5,
+          "type": "FLOW_CONTROL",
+          "link": 19
+        },
+        {
+          "name": "initial_value1",
+          "shape": 7,
+          "type": "*",
+          "link": 25
+        },
+        {
+          "name": "initial_value2",
+          "type": "*",
+          "link": 28
+        },
+        {
+          "name": "initial_value3",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value1",
+          "type": "*",
+          "links": [
+            49
+          ]
+        },
+        {
+          "name": "value2",
+          "type": "*",
+          "links": null
+        },
+        {
+          "name": "value3",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy forLoopEnd"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 13,
+      "type": "PrimitiveString",
+      "pos": [
+        -19.983943807687638,
+        -175.01966392882898
+      ],
+      "size": [
+        270,
+        69.984375
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "PrimitiveString"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "value": ""
+      }
+    },
+    {
+      "id": 15,
+      "type": "easy showAnything",
+      "pos": [
+        1430.086934642747,
+        -36.13103900135628
+      ],
+      "size": [
+        225,
+        126
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": [
+            28
+          ]
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "1"
+      ],
+      "widgets_values_named": {
+        "text": "1"
+      }
+    },
+    {
+      "id": 30,
+      "type": "easy showAnything",
+      "pos": [
+        4020.569432949035,
+        -157.3500983849642
+      ],
+      "size": [
+        225,
+        126
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 49
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "{\n    \"schema_version\": \"1.0\",\n    \"project_id\": \"project-1\",\n    \"chapter_id\": \"chapter-1\",\n    \"summary\": \"第1页：The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\",\n    \"page_summaries\": [\n        {\n            \"page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"summary\": \"The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\"\n        }\n    ],\n    \"story_events\": [\n        {\n            \"event_id\": \"4a002840-3b49-54d9-a9e7-ca1f3b04f653\",\n            \"description\": \"Introduction to a magical world consisting of four elemental islands and a central royal palace.\",\n            \"participants\": [],\n            \"confidence\": 0.99,\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"panel_index\": 1\n        },\n        {\n            \"event_id\": \"a960c546-4089-53f6-9763-6d6cb537208b\",\n            \"description\": \"Introduction of the king and his daughter, noting the king prepares breakfast for her daily.\",\n            \"participants\": [],\n            \"confidence\": 0.95,\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"panel_index\": 2\n        }\n    ],\n    \"character_relationships\": [],\n    \"characters\": [],\n    \"locations\": [\n        {\n            \"location_id\": \"51a02f4f-873e-557c-b3e7-4c6a65dd97f5\",\n            \"name\": \"Floating Islands and Royal Palace\",\n            \"status\": \"candidate\",\n            \"source_page_ids\": [\n                \"dac84779-21e8-5095-bd6e-732078d765d0\"\n            ]\n        },\n        {\n            \"location_id\": \"732150bd-2a78-5b0b-a458-c129b4ac43ab\",\n            \"name\": \"Royal Palace and City\",\n            \"status\": \"candidate\",\n            \"source_page_ids\": [\n                \"dac84779-21e8-5095-bd6e-732078d765d0\"\n            ]\n        }\n    ],\n    \"ending_state\": \"The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\",\n    \"unresolved_questions\": [\n        {\n            \"question\": \"No characters are visually depicted yet, only mentioned in narration.\",\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"kind\": \"analysis_uncertainty\"\n        }\n    ],\n    \"unanalyzed_page_ids\": [\n        \"5bbc830c-cebd-597d-8dc4-39bdada491b3\",\n        \"dbb0c39c-a68e-5dde-a7f2-c801b2ee2fcc\",\n        \"11d78109-221c-52a5-bf35-47777cc6f35f\",\n        \"be7e31cd-6ab2-5778-8aeb-d4d715895289\",\n        \"c60d025c-b6a5-503d-b86f-5a689fedcfbf\",\n        \"eceef3d6-d3c9-5821-8c0e-2781487fe2cb\",\n        \"b070cf51-39fe-583f-bc31-750549cc6d8f\",\n        \"7278adc9-2b65-5639-a797-35ec8df3afaf\",\n        \"342c1cbb-3861-551b-aba7-7ad26dfd83e5\",\n        \"7bba3681-d315-5595-9b99-8ca1d17e7d58\",\n        \"84c043d1-c514-58b7-92bb-bd329ae7fed4\",\n        \"3ab07dbf-0856-5d30-90e9-c05568a2da28\",\n        \"44dfc8de-9257-5d67-ad1f-9b73f87ccd61\",\n        \"8a0afa92-58cc-5862-a6fd-d31f053cafec\",\n        \"bf8c9cec-6014-5193-8aad-15a52e6a980f\",\n        \"e859327c-9552-5475-a609-6f1b21bdba23\",\n        \"b3d338f9-bbef-563d-83ef-8e40109d0664\",\n        \"27fec120-aceb-574f-bb8a-fb6c7c2034e4\",\n        \"54036932-76f3-5960-bcca-0bab97038897\"\n    ],\n    \"source_page_ids\": [\n        \"dac84779-21e8-5095-bd6e-732078d765d0\",\n        \"5bbc830c-cebd-597d-8dc4-39bdada491b3\",\n        \"dbb0c39c-a68e-5dde-a7f2-c801b2ee2fcc\",\n        \"11d78109-221c-52a5-bf35-47777cc6f35f\",\n        \"be7e31cd-6ab2-5778-8aeb-d4d715895289\",\n        \"c60d025c-b6a5-503d-b86f-5a689fedcfbf\",\n        \"eceef3d6-d3c9-5821-8c0e-2781487fe2cb\",\n        \"b070cf51-39fe-583f-bc31-750549cc6d8f\",\n        \"7278adc9-2b65-5639-a797-35ec8df3afaf\",\n        \"342c1cbb-3861-551b-aba7-7ad26dfd83e5\",\n        \"7bba3681-d315-5595-9b99-8ca1d17e7d58\",\n        \"84c043d1-c514-58b7-92bb-bd329ae7fed4\",\n        \"3ab07dbf-0856-5d30-90e9-c05568a2da28\",\n        \"44dfc8de-9257-5d67-ad1f-9b73f87ccd61\",\n        \"8a0afa92-58cc-5862-a6fd-d31f053cafec\",\n        \"bf8c9cec-6014-5193-8aad-15a52e6a980f\",\n        \"e859327c-9552-5475-a609-6f1b21bdba23\",\n        \"b3d338f9-bbef-563d-83ef-8e40109d0664\",\n        \"27fec120-aceb-574f-bb8a-fb6c7c2034e4\",\n        \"54036932-76f3-5960-bcca-0bab97038897\"\n    ],\n    \"source_fingerprint\": \"9642d94e9c38d8d98c614821e74fbb30a9a91a7242fa02c4c3d52692ac39380c\"\n}"
+      ],
+      "widgets_values_named": {
+        "text": "{\n    \"schema_version\": \"1.0\",\n    \"project_id\": \"project-1\",\n    \"chapter_id\": \"chapter-1\",\n    \"summary\": \"第1页：The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\",\n    \"page_summaries\": [\n        {\n            \"page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"summary\": \"The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\"\n        }\n    ],\n    \"story_events\": [\n        {\n            \"event_id\": \"4a002840-3b49-54d9-a9e7-ca1f3b04f653\",\n            \"description\": \"Introduction to a magical world consisting of four elemental islands and a central royal palace.\",\n            \"participants\": [],\n            \"confidence\": 0.99,\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"panel_index\": 1\n        },\n        {\n            \"event_id\": \"a960c546-4089-53f6-9763-6d6cb537208b\",\n            \"description\": \"Introduction of the king and his daughter, noting the king prepares breakfast for her daily.\",\n            \"participants\": [],\n            \"confidence\": 0.95,\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"page_index\": 1,\n            \"panel_index\": 2\n        }\n    ],\n    \"character_relationships\": [],\n    \"characters\": [],\n    \"locations\": [\n        {\n            \"location_id\": \"51a02f4f-873e-557c-b3e7-4c6a65dd97f5\",\n            \"name\": \"Floating Islands and Royal Palace\",\n            \"status\": \"candidate\",\n            \"source_page_ids\": [\n                \"dac84779-21e8-5095-bd6e-732078d765d0\"\n            ]\n        },\n        {\n            \"location_id\": \"732150bd-2a78-5b0b-a458-c129b4ac43ab\",\n            \"name\": \"Royal Palace and City\",\n            \"status\": \"candidate\",\n            \"source_page_ids\": [\n                \"dac84779-21e8-5095-bd6e-732078d765d0\"\n            ]\n        }\n    ],\n    \"ending_state\": \"The page introduces a magical world where four islands representing water, fire, wind, and earth surround a central royal palace, and mentions that the king lovingly prepares breakfast for his daughter every day.\",\n    \"unresolved_questions\": [\n        {\n            \"question\": \"No characters are visually depicted yet, only mentioned in narration.\",\n            \"source_page_id\": \"dac84779-21e8-5095-bd6e-732078d765d0\",\n            \"kind\": \"analysis_uncertainty\"\n        }\n    ],\n    \"unanalyzed_page_ids\": [\n        \"5bbc830c-cebd-597d-8dc4-39bdada491b3\",\n        \"dbb0c39c-a68e-5dde-a7f2-c801b2ee2fcc\",\n        \"11d78109-221c-52a5-bf35-47777cc6f35f\",\n        \"be7e31cd-6ab2-5778-8aeb-d4d715895289\",\n        \"c60d025c-b6a5-503d-b86f-5a689fedcfbf\",\n        \"eceef3d6-d3c9-5821-8c0e-2781487fe2cb\",\n        \"b070cf51-39fe-583f-bc31-750549cc6d8f\",\n        \"7278adc9-2b65-5639-a797-35ec8df3afaf\",\n        \"342c1cbb-3861-551b-aba7-7ad26dfd83e5\",\n        \"7bba3681-d315-5595-9b99-8ca1d17e7d58\",\n        \"84c043d1-c514-58b7-92bb-bd329ae7fed4\",\n        \"3ab07dbf-0856-5d30-90e9-c05568a2da28\",\n        \"44dfc8de-9257-5d67-ad1f-9b73f87ccd61\",\n        \"8a0afa92-58cc-5862-a6fd-d31f053cafec\",\n        \"bf8c9cec-6014-5193-8aad-15a52e6a980f\",\n        \"e859327c-9552-5475-a609-6f1b21bdba23\",\n        \"b3d338f9-bbef-563d-83ef-8e40109d0664\",\n        \"27fec120-aceb-574f-bb8a-fb6c7c2034e4\",\n        \"54036932-76f3-5960-bcca-0bab97038897\"\n    ],\n    \"source_page_ids\": [\n        \"dac84779-21e8-5095-bd6e-732078d765d0\",\n        \"5bbc830c-cebd-597d-8dc4-39bdada491b3\",\n        \"dbb0c39c-a68e-5dde-a7f2-c801b2ee2fcc\",\n        \"11d78109-221c-52a5-bf35-47777cc6f35f\",\n        \"be7e31cd-6ab2-5778-8aeb-d4d715895289\",\n        \"c60d025c-b6a5-503d-b86f-5a689fedcfbf\",\n        \"eceef3d6-d3c9-5821-8c0e-2781487fe2cb\",\n        \"b070cf51-39fe-583f-bc31-750549cc6d8f\",\n        \"7278adc9-2b65-5639-a797-35ec8df3afaf\",\n        \"342c1cbb-3861-551b-aba7-7ad26dfd83e5\",\n        \"7bba3681-d315-5595-9b99-8ca1d17e7d58\",\n        \"84c043d1-c514-58b7-92bb-bd329ae7fed4\",\n        \"3ab07dbf-0856-5d30-90e9-c05568a2da28\",\n        \"44dfc8de-9257-5d67-ad1f-9b73f87ccd61\",\n        \"8a0afa92-58cc-5862-a6fd-d31f053cafec\",\n        \"bf8c9cec-6014-5193-8aad-15a52e6a980f\",\n        \"e859327c-9552-5475-a609-6f1b21bdba23\",\n        \"b3d338f9-bbef-563d-83ef-8e40109d0664\",\n        \"27fec120-aceb-574f-bb8a-fb6c7c2034e4\",\n        \"54036932-76f3-5960-bcca-0bab97038897\"\n    ],\n    \"source_fingerprint\": \"9642d94e9c38d8d98c614821e74fbb30a9a91a7242fa02c4c3d52692ac39380c\"\n}"
+      }
+    },
+    {
+      "id": 34,
+      "type": "easy showAnything",
+      "pos": [
+        5071.735517013171,
+        220.9917355371901
+      ],
+      "size": [
+        363.4375,
+        269.75
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 63
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "slot_index": 0,
+          "links": []
+        }
+      ],
+      "title": "查看资产自动生成报告",
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "{\"batch_decision\": \"ERROR\", \"total\": 2, \"succeeded\": 0, \"failed\": 2, \"results\": [{\"index\": 0, \"request_id\": \"dd1e6bc6-ace0-4af7-9f29-f0e3e7445ed6\", \"decision\": \"ERROR\", \"error_code\": \"QC_INVALID_RESPONSE\", \"error\": \"name 'Path' is not defined\"}, {\"index\": 1, \"request_id\": \"3b3e1397-a093-46ef-b6dd-3dd7f3884633\", \"decision\": \"ERROR\", \"error_code\": \"QC_INVALID_RESPONSE\", \"error\": \"name 'Path' is not defined\"}]}"
+      ],
+      "widgets_values_named": {
+        "text": "{\"batch_decision\": \"ERROR\", \"total\": 2, \"succeeded\": 0, \"failed\": 2, \"results\": [{\"index\": 0, \"request_id\": \"dd1e6bc6-ace0-4af7-9f29-f0e3e7445ed6\", \"decision\": \"ERROR\", \"error_code\": \"QC_INVALID_RESPONSE\", \"error\": \"name 'Path' is not defined\"}, {\"index\": 1, \"request_id\": \"3b3e1397-a093-46ef-b6dd-3dd7f3884633\", \"decision\": \"ERROR\", \"error_code\": \"QC_INVALID_RESPONSE\", \"error\": \"name 'Path' is not defined\"}]}"
+      }
+    },
+    {
+      "id": 35,
+      "type": "ComicAssetAutoTargetBatchBuilder",
+      "pos": [
+        4000.608059082031,
+        145.12
+      ],
+      "size": [
+        431.890625,
+        260
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "update_report",
+          "shape": 7,
+          "type": "COMIC_KB_UPDATE_REPORT",
+          "link": 10
+        },
+        {
+          "name": "pages",
+          "shape": 7,
+          "type": "COMIC_PAGES",
+          "link": 60
+        },
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "widget": {
+            "name": "project_id"
+          },
+          "link": 55
+        },
+        {
+          "name": "page_index",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "page_index"
+          },
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "requests_json",
+          "type": "STRING",
+          "slot_index": 0,
+          "links": [
+            62
+          ]
+        },
+        {
+          "name": "target_report_json",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": [
+            59
+          ]
+        }
+      ],
+      "title": "自动处理当前页面所有人物和场景（缺少资产时使用原页参考）",
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "744e7d0385b60ebc3fb6d345ab0d42f3ba3a77b2",
+        "Node name for S&R": "ComicAssetAutoTargetBatchBuilder"
+      },
+      "widgets_values": [
+        "",
+        "character_portrait",
+        "automatic reference image",
+        1
+      ],
+      "widgets_values_named": {
+        "project_id": "",
+        "asset_type": "character_portrait",
+        "generation_goal": "automatic reference image",
+        "page_index": 1
+      }
+    },
+    {
+      "id": 37,
+      "type": "ComicAssetImageBatchGenerationLoop",
+      "pos": [
+        4534.297635623383,
+        136.34522211210435
+      ],
+      "size": [
+        460,
+        577.921875
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "requests_json",
+          "type": "STRING",
+          "widget": {
+            "name": "requests_json"
+          },
+          "link": 62
+        }
+      ],
+      "outputs": [
+        {
+          "name": "batch_images",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            96
+          ]
+        },
+        {
+          "name": "batch_report_json",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": [
+            63,
+            93,
+            95
+          ]
+        },
+        {
+          "name": "batch_decision",
+          "type": "STRING",
+          "slot_index": 2,
+          "links": []
+        }
+      ],
+    "title": "自动资产生成：ChatGPT Images / Qwen Image 2 + QC + 有限重试",
+      "properties": {
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "aux_id": "yuiyideyui/optimize_prompt",
+        "ver": "744e7d0385b60ebc3fb6d345ab0d42f3ba3a77b2",
+    "Node name for S&R": "ComicAssetImageBatchGenerationLoop"
+      },
+      "widgets_values": [
+        "[]",
+    "chatgpt_image",
+    "",
+    "gpt-image-1",
+    "https://api.openai.com/v1",
+    "1024x1024",
+    "qwen_image_2.1_int8_convrot.safetensors",
+    "qwen3vl_8b_int8_convrot.safetensors",
+    "qwen_image_2.1_vae_bf16.safetensors",
+    0,
+    "auto",
+    "default",
+    "text, watermarks, speech bubbles, comic frame",
+    0,
+    25,
+    1.0,
+    0,
+    0.8,
+    "",
+        "gemini-2.5-flash",
+        "https://generativelanguage.googleapis.com",
+        600,
+        3
+      ],
+      "widgets_values_named": {
+        "requests_json": "[]",
+    "image_backend": "chatgpt_image",
+    "image_api_key": "",
+    "image_model": "gpt-image-1",
+    "image_api_base_url": "https://api.openai.com/v1",
+    "image_size": "1024x1024",
+    "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+    "qwen2_resolution": 0,
+    "qwen2_cache_device": "auto",
+    "qwen2_cache_dtype": "default",
+    "qwen2_negative_prompt": "text, watermarks, speech bubbles, comic frame",
+        "seed": 0,
+    "steps": 25,
+    "cfg": 1.0,
+    "max_generation_retries": 0,
+    "pass_threshold": 0.8,
+    "gemini_api_key": "",
+        "gemini_model": "gemini-2.5-flash",
+        "api_base_url": "https://generativelanguage.googleapis.com",
+        "timeout_seconds": 600,
+        "api_retries": 3
+      }
+    },
+    {
+      "id": 43,
+      "type": "ComicAssetVoiceGenerationAndExport",
+      "pos": [5200, 650],
+      "size": [460, 430],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {"name": "project_id", "type": "STRING", "widget": {"name": "project_id"}, "link": 2},
+        {"name": "generated_character_images", "type": "IMAGE", "link": 96},
+        {"name": "asset_generation_report", "type": "STRING", "link": 95},
+        {"name": "voice_instruction", "type": "STRING", "widget": {"name": "voice_instruction"}, "link": 94},
+        {"name": "reference_text", "type": "STRING", "widget": {"name": "reference_text"}},
+        {"name": "language", "type": "COMBO", "widget": {"name": "language"}},
+        {"name": "model_path", "type": "STRING", "widget": {"name": "model_path"}},
+        {"name": "output_directory", "type": "STRING", "widget": {"name": "output_directory"}},
+        {"name": "filename_prefix", "type": "STRING", "widget": {"name": "filename_prefix"}}
+      ],
+      "outputs": [
+        {"name": "ref_audios", "type": "AUDIO", "slot_index": 0, "links": [82]},
+        {"name": "voice_manifest_json", "type": "STRING", "slot_index": 1, "links": [84, 91, 92]},
+        {"name": "saved_audio_paths", "type": "STRING", "slot_index": 2, "links": []},
+        {"name": "voice_report_json", "type": "STRING", "slot_index": 3, "links": []}
+      ],
+      "title": "当前页角色参考音频（生成后直接导出 WAV）",
+      "properties": {"Node name for S&R": "ComicAssetVoiceGenerationAndExport"},
+      "widgets_values": ["", "有一天，兔子碰见乌龟，看见乌龟爬得这么慢，就想戏弄戏弄他，于是笑眯眯地说：\"乌龟，乌龟，咱们来赛跑，好吗？\"", "Chinese", "D:\\ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\my_comfyui\\voiceCreate\\models\\Qwen3-TTS-12Hz-1.7B-VoiceDesign", "exports/audio", "page_character_reference", "auto", false],
+      "widgets_values_named": {"project_id": "", "reference_text": "有一天，兔子碰见乌龟，看见乌龟爬得这么慢，就想戏弄戏弄他，于是笑眯眯地说：\"乌龟，乌龟，咱们来赛跑，好吗？\"", "language": "Chinese", "model_path": "D:\\ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\my_comfyui\\voiceCreate\\models\\Qwen3-TTS-12Hz-1.7B-VoiceDesign", "output_directory": "exports/audio", "filename_prefix": "page_character_reference", "device": "auto", "force_regenerate": false}
+    },
+    {
+      "id": 48,
+      "type": "ComicPageVoiceInstructionBuilder",
+      "pos": [4700, 650],
+      "size": [420, 230],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {"name": "entity_resolution", "type": "COMIC_ENTITY_RESOLUTION", "link": 54},
+        {"name": "asset_generation_report", "type": "STRING", "link": 93}
+      ],
+      "outputs": [
+        {"name": "voice_instruction", "type": "STRING", "slot_index": 0, "links": [94]}
+      ],
+      "title": "当前页角色声音指令（性别与音色）",
+      "properties": {"Node name for S&R": "ComicPageVoiceInstructionBuilder"},
+      "widgets_values": ["自然、清晰、稳定的动漫角色参考音色。"],
+      "widgets_values_named": {"base_instruction": "自然、清晰、稳定的动漫角色参考音色。", "asset_generation_report": "{}"}
+    },
+    {
+      "id": 44,
+      "type": "ComicAnimePageStoryboardPrompt",
+      "pos": [5200, 50],
+      "size": [480, 420],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {"name": "page_analysis_json", "type": "STRING", "link": 83},
+        {"name": "voice_manifest_json", "type": "STRING", "link": 84},
+        {"name": "previous_page_summary", "type": "STRING", "link": 85}
+      ],
+      "outputs": [
+        {"name": "user_prompt", "type": "STRING", "slot_index": 0, "links": [86]},
+        {"name": "current_page_summary", "type": "STRING", "slot_index": 1, "links": [87]},
+        {"name": "material_mapping_json", "type": "STRING", "slot_index": 2, "links": []}
+      ],
+      "title": "当前页故事大纲与 Auto Anime Prompt",
+      "properties": {"Node name for S&R": "ComicAnimePageStoryboardPrompt"},
+      "widgets_values": ["{}", "[]", "[]", "", ""],
+      "widgets_values_named": {"page_analysis_json": "{}", "asset_manifest_json": "[]", "voice_manifest_json": "[]", "current_story_outline": "", "previous_page_summary": ""}
+    },
+    {
+      "id": 45,
+      "type": "ComicSaveAudioReference",
+      "pos": [5700, 650],
+      "size": [360, 180],
+      "flags": {},
+      "order": 17,
+      "mode": 4,
+      "inputs": [
+        {"name": "audio", "type": "AUDIO", "link": 82},
+        {"name": "voice_manifest_json", "type": "STRING", "link": 91}
+      ],
+      "outputs": [
+        {"name": "audio", "type": "AUDIO", "slot_index": 0, "links": []},
+        {"name": "saved_audio_paths", "type": "STRING", "slot_index": 1, "links": []}
+      ],
+      "title": "已由当前页角色参考音频节点直接导出（兼容旧节点，已禁用）",
+      "properties": {"Node name for S&R": "ComicSaveAudioReference"},
+      "widgets_values": ["exports/audio", "page_character_reference"],
+      "widgets_values_named": {"output_directory": "exports/audio", "filename_prefix": "page_character_reference"}
+    },
+    {
+      "id": 46,
+      "type": "AutoAnimeStoryboardPipeline",
+      "pos": [5750, 50],
+      "size": [480, 520],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {"name": "user_prompt", "type": "STRING", "link": 86},
+        {"name": "previous_summary", "type": "STRING", "link": 87},
+        {"name": "voice_manifest_json", "type": "STRING", "link": 92}
+      ],
+      "outputs": [
+        {"name": "final_storyboard", "type": "STRING", "slot_index": 0, "links": [89]},
+        {"name": "story_summary", "type": "STRING", "slot_index": 1, "links": [90]},
+        {"name": "output_directory", "type": "STRING", "slot_index": 2, "links": []},
+        {"name": "status", "type": "STRING", "slot_index": 3, "links": []}
+      ],
+      "title": "生成当前页 Auto Anime 故事大纲（不叠加旧分镜）",
+      "properties": {"Node name for S&R": "AutoAnimeStoryboardPipeline"},
+      "widgets_values": ["", "", "gemini-2.5-flash", "output/anime_storyboard", 7, 2, true, 0.5, 85],
+      "widgets_values_named": {"user_prompt": "", "api_key": "", "model_name": "gemini-2.5-flash", "output_dir": "output/anime_storyboard", "part_duration": 7, "max_retries": 2, "return_current_page_only": true, "image_scale": 0.5, "image_quality": 85}
+    },
+    {
+      "id": 47,
+      "type": "ComicSaveStoryboardOutputs",
+      "pos": [6300, 50],
+      "size": [380, 220],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {"name": "storyboard", "type": "STRING", "link": 89},
+        {"name": "story_summary", "type": "STRING", "link": 90}
+      ],
+      "outputs": [
+        {"name": "saved_paths_json", "type": "STRING", "slot_index": 0, "links": []},
+        {"name": "storyboard", "type": "STRING", "slot_index": 1, "links": []}
+      ],
+      "title": "直接导出当前页大纲与分镜",
+      "properties": {"Node name for S&R": "ComicSaveStoryboardOutputs"},
+      "widgets_values": ["output/anime_storyboard", "page_001"],
+      "widgets_values_named": {"output_directory": "output/anime_storyboard", "page_key": "page_001"}
+    }
+  ],
+  "links": [
+    [
+      2,
+      1,
+      1,
+      3,
+      0,
+      "STRING"
+    ],
+    [
+      3,
+      1,
+      2,
+      3,
+      1,
+      "STRING"
+    ],
+    [
+      4,
+      5,
+      0,
+      4,
+      0,
+      "COMIC_ANALYSIS"
+    ],
+    [
+      5,
+      1,
+      0,
+      5,
+      0,
+      "COMIC_PAGES"
+    ],
+    [
+      6,
+      3,
+      1,
+      5,
+      1,
+      "COMIC_KNOWLEDGE"
+    ],
+    [
+      7,
+      3,
+      0,
+      5,
+      3,
+      "STRING"
+    ],
+    [
+      8,
+      5,
+      0,
+      6,
+      0,
+      "COMIC_ANALYSIS"
+    ],
+    [
+      9,
+      4,
+      0,
+      6,
+      1,
+      "COMIC_ENTITY_RESOLUTION"
+    ],
+    [
+      10,
+      6,
+      0,
+      7,
+      1,
+      "COMIC_KB_UPDATE_REPORT"
+    ],
+    [
+      11,
+      1,
+      1,
+      7,
+      1,
+      "STRING"
+    ],
+    [
+      12,
+      1,
+      2,
+      7,
+      2,
+      "STRING"
+    ],
+    [
+      16,
+      10,
+      1,
+      11,
+      0,
+      "INT"
+    ],
+    [
+      17,
+      11,
+      0,
+      3,
+      2,
+      "INT"
+    ],
+    [
+      18,
+      11,
+      0,
+      5,
+      2,
+      "INT"
+    ],
+    [
+      19,
+      10,
+      0,
+      12,
+      0,
+      "FLOW_CONTROL"
+    ],
+    [
+      24,
+      13,
+      0,
+      10,
+      0,
+      "STRING"
+    ],
+    [
+      25,
+      7,
+      0,
+      12,
+      1,
+      "COMIC_CHAPTER_SUMMARY"
+    ],
+    [
+      27,
+      11,
+      0,
+      15,
+      0,
+      "INT"
+    ],
+    [
+      28,
+      15,
+      0,
+      12,
+      2,
+      "*"
+    ],
+    [
+      49,
+      12,
+      0,
+      30,
+      0,
+      "*"
+    ],
+    [
+      54,
+      4,
+      0,
+      35,
+      0,
+      "COMIC_ENTITY_RESOLUTION"
+    ],
+    [
+      55,
+      1,
+      1,
+      35,
+      3,
+      "STRING"
+    ],
+    [
+      60,
+      1,
+      0,
+      35,
+      2,
+      "COMIC_PAGES"
+    ],
+    [
+      61,
+      11,
+      0,
+      35,
+      4,
+      "INT"
+    ],
+    [
+      62,
+      35,
+      0,
+      37,
+      0,
+      "STRING"
+    ],
+    [
+      63,
+      37,
+      1,
+      34,
+      0,
+      "STRING"
+    ],
+    [
+      94,
+      48,
+      0,
+      43,
+      4,
+      "STRING"
+    ],
+    [
+      95,
+      37,
+      1,
+      43,
+      3,
+      "STRING"
+    ],
+    [
+      96,
+      37,
+      0,
+      43,
+      2,
+      "IMAGE"
+    ],
+    [
+      64,
+      1,
+      0,
+      3,
+      3,
+      "COMIC_PAGES"
+    ],
+    [
+      82,
+      43,
+      0,
+      45,
+      0,
+      "AUDIO"
+    ],
+    [
+      83,
+      5,
+      1,
+      44,
+      0,
+      "STRING"
+    ],
+    [
+      84,
+      43,
+      1,
+      44,
+      2,
+      "STRING"
+    ],
+    [
+      85,
+      3,
+      0,
+      44,
+      4,
+      "STRING"
+    ],
+    [
+      86,
+      44,
+      0,
+      46,
+      0,
+      "STRING"
+    ],
+    [
+      87,
+      44,
+      1,
+      46,
+      9,
+      "STRING"
+    ],
+    [
+      89,
+      46,
+      0,
+      47,
+      0,
+      "STRING"
+    ],
+    [
+      90,
+      46,
+      1,
+      47,
+      1,
+      "STRING"
+    ],
+    [
+      92,
+      43,
+      1,
+      46,
+      10,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7513148009015779,
+      "offset": [
+        0.6553345678015161,
+        633.4186274448582
+      ]
+    },
+    "anomalous_hashes": {
+      "37_qwen_image_edit_2511_bf16.safetensors": {
+        "hash": "",
+        "size": 40861031560
+      },
+      "37_qwen_image_vae.safetensors": {
+        "hash": "",
+        "size": 253806246
+      }
+    },
+    "frontendVersion": "1.51.9",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "asset_generation_notes": [
+      "节点35会遍历当前页面 ComicEntityResolver 输出的全部 characters 和 locations，不按人物重要性筛选。",
+      "节点35优先使用 matched_entity_id，否则使用知识库更新后落库的 entity_id，并自动查询 approved 参考资产。",
+      "没有 approved 参考资产时，节点35使用当前页面 source_page_id 作为临时首次参考；只有 QC PASS 才登记 candidate。",
+      "节点32的 UNet、CLIP、VAE 需要在当前 ComfyUI 中选择实际模型文件。",
+      "API Key 保持为空，建议通过本地凭据或运行时输入提供。"
+    ]
+  },
+  "version": 0.4
+}

@@ -10,10 +10,19 @@ from create_manga_story.nodes.gemini_analyzer import GeminiComicPageAnalyzer
 from create_manga_story.core.database import ComicDatabase
 from create_manga_story.core.schemas import validate_analysis
 from create_manga_story.core.storage import get_data_root, safe_component
-from create_manga_story.api.gemini_client import _endpoint
+from create_manga_story.api.gemini_client import _endpoint, _normalize_analysis_crop_boxes, _filter_macro_locations
 
 
 class CoreTests(unittest.TestCase):
+    def test_macro_location_filter_keeps_world_and_palace_separate_but_dedupes_room(self):
+        result = _filter_macro_locations({"locations": [
+            {"name": "Elemental World Realm", "description": "whole floating world", "same_location_key": "realm", "reference_quality": 0.9},
+            {"name": "Central Palace", "description": "central palace city", "same_location_key": "palace", "reference_quality": 0.92},
+            {"name": "Princess Bedroom", "description": "whole room", "same_location_key": "room", "reference_quality": 0.9},
+            {"name": "Princess Bedroom", "description": "bed detail", "same_location_key": "room", "reference_quality": 0.7},
+        ]})
+        self.assertEqual(len(result["locations"]), 3)
+        self.assertEqual([item["same_location_key"] for item in result["locations"]], ["realm", "palace", "room"])
     def test_safe_component_rejects_empty_and_path_traversal(self):
         with self.assertRaises(ValueError):
             safe_component("../")
@@ -50,6 +59,33 @@ class CoreTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             validate_analysis(value)
+
+    def test_analysis_schema_accepts_reference_quality_boolean(self):
+        value = {
+            "summary": "Page",
+            "panels": [],
+            "characters": [{
+                "name": "King", "identity_candidate": "King", "appearance": "man",
+                "clothing": "robe", "expression": "calm", "action": "stands",
+                "emotion": "calm", "confidence": 0.9, "panel_index": 1,
+                "is_best_reference": True,
+            }],
+            "locations": [], "dialogues": [], "story_events": [],
+            "character_relationships": [], "continuity": [], "uncertainties": [],
+        }
+        self.assertIs(validate_analysis(value), value)
+
+    def test_gemini_mixed_crop_coordinates_are_normalized_independently(self):
+        result = {"characters": [{"crop_box": {
+            "x": 0.43, "y": 91.0, "width": 10.0, "height": 13.0,
+            "padding": 0.01,
+        }}], "locations": []}
+        normalized = _normalize_analysis_crop_boxes(result, 1000, 800)
+        crop = normalized["characters"][0]["crop_box"]
+        self.assertAlmostEqual(crop["x"], 0.43)
+        self.assertAlmostEqual(crop["y"], 91 / 800)
+        self.assertAlmostEqual(crop["width"], 10 / 1000)
+        self.assertAlmostEqual(crop["height"], 13 / 800)
 
     def test_gemini_endpoint_supports_api_root_and_custom_key(self):
         self.assertEqual(
@@ -202,6 +238,54 @@ class CoreTests(unittest.TestCase):
                     0,
                 )
             self.assertFalse((root / "analyses").exists())
+
+    def test_analyzer_reconciles_a_cached_page_missing_from_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page = {
+                "page_id": "cached-page-1",
+                "project_id": "project-1",
+                "chapter_id": "chapter-1",
+                "page_index": 1,
+                "source_path": "page.png",
+                "image_path": str(root / "page.png"),
+                "sha256": "cached-hash",
+                "width": 10,
+                "height": 20,
+            }
+            database = ComicDatabase(root / "comic2anime.sqlite3")
+            database.initialize()
+            analysis = {
+                "summary": "A cached page",
+                "panels": [],
+                "characters": [],
+                "locations": [],
+                "dialogues": [],
+                "story_events": [],
+                "continuity": [],
+                "uncertainties": [],
+            }
+            with patch(
+                "create_manga_story.nodes.gemini_analyzer.get_data_root",
+                return_value=root,
+            ), patch(
+                "create_manga_story.nodes.gemini_analyzer.analyze_image",
+                return_value=analysis,
+            ):
+                GeminiComicPageAnalyzer().analyze_page(
+                    [page], 1, "", "gemini-test", "https://example.test", 10, 0
+                )
+            with database.connect() as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM pages WHERE page_id = 'cached-page-1'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0],
+                    1,
+                )
 
     def test_database_persists_page_and_analysis(self):
         with tempfile.TemporaryDirectory() as directory:

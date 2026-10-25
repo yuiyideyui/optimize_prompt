@@ -44,6 +44,8 @@ class AutoAnimeStoryboardPipeline:
                 "ref_images_metadata": ("STRING", {"multiline": False}),
                 "history_context": ("STRING", {"multiline": True, "default": ""}),
                 "previous_summary": ("STRING", {"multiline": True, "default": ""}),
+                "voice_manifest_json": ("STRING", {"multiline": True, "default": "[]"}),
+                "return_current_page_only": ("BOOLEAN", {"default": True}),
                 "image_scale": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 1.0, "step": 0.1}),
                 "image_quality": ("INT", {"default": 85, "min": 1, "max": 100, "step": 5}),
             }
@@ -223,7 +225,9 @@ class AutoAnimeStoryboardPipeline:
         images=None,
         history_context="",
         previous_summary="",
+        voice_manifest_json="[]",
         ref_images_metadata=None,
+        return_current_page_only=True,
         image_scale=0.5,
         image_quality=85,
     ):
@@ -258,6 +262,31 @@ class AutoAnimeStoryboardPipeline:
         # 新增：解析 user_prompt 中声明的音频素材数量及编号（支持 <Audio 1>, <audio 1> 等）
         audio_matches = [int(x) for x in re.findall(r"<[Aa]udio\s+(\d+)>", user_prompt or "", re.I)]
         audio_count = max(audio_matches) if audio_matches else 0
+        try:
+            voice_manifest = json.loads(voice_manifest_json or "[]")
+        except json.JSONDecodeError as exc:
+            raise ValueError("voice_manifest_json must contain valid JSON.") from exc
+        if not isinstance(voice_manifest, list):
+            raise ValueError("voice_manifest_json must be a JSON array.")
+        voice_bindings = []
+        for index, item in enumerate(voice_manifest, 1):
+            if not isinstance(item, dict):
+                continue
+            slot = item.get("ref_audio_slot", index)
+            try:
+                slot = int(slot)
+            except (TypeError, ValueError):
+                slot = index
+            voice_bindings.append({
+                "token": "<Audio {}>".format(slot),
+                "ref_audio_slot": slot,
+                "audio_index": item.get("audio_index", slot - 1),
+                "character_id": item.get("character_id", ""),
+                "character_name": item.get("character_name", ""),
+                "voice_id": item.get("voice_id", ""),
+            })
+        if voice_bindings:
+            audio_count = max(audio_count, max(item["ref_audio_slot"] for item in voice_bindings))
         
         # 图像引用规则
         numbering_rule = (
@@ -275,6 +304,19 @@ class AutoAnimeStoryboardPipeline:
                 f"本次任务声明的音频素材共有 {audio_count} 个，编号槽位固定为 `<Audio 1>` 至 `<Audio {audio_count}>`。"
                 f"分镜中**仅当**涉及需要音频绑定的角色参考音频或配音时，必须且只能使用原生的音频编号（如 `<Audio 1>`, `<Audio 2>`），"
                 "严禁随意编造或修改音频编号格式。无关角色的台词可以不标注音频编号。\n"
+            )
+        voice_binding_rule = ""
+        if voice_bindings:
+            voice_binding_rule = (
+                "【角色-参考音频绑定表（硬约束）】：\n"
+                + "\n".join(
+                    "- {token} → character_id={character_id}；角色={character_name}；"
+                    "audio_index={audio_index}；ref_audio_slot={ref_audio_slot}".format(**item)
+                    for item in voice_bindings
+                )
+                + "\n同一 character_id 的所有对白必须绑定同一个 <Audio N>，不得换用其他角色的音频。"
+                "有对应参考音频的角色每次说话，台词末尾必须标注正确的 <Audio N>；"
+                "没有对应音频的角色只能用文字描述，不得虚构 Audio 编号。\n"
             )
 
         summary_section = ""
@@ -300,13 +342,22 @@ class AutoAnimeStoryboardPipeline:
                 "- 严禁对有绑定的角色篡改、丢失或错误映射音频编号\n\n"
             )
 
+        plot_boundary_rule = (
+            "【剧情边界硬约束】：只允许改编当前页 user_prompt、当前页参考图和已提供的前页摘要中明确支持的内容。"
+            "禁止自行续写后续剧情，禁止新增未出现的事件、反转、冲突升级、人物决定、地点、道具、角色关系、对白或结局。"
+            "只能把当前页已经发生或画面明确展示的动作拆成 Part；如果当前页没有展示结果，就不要写结果，"
+            "用当前可见状态、必要反应或未完成状态结束。不要为了凑时长而编造剧情。\n"
+        )
+
         generation_prompt = (
             f"{user_prompt}\n"
             f"{summary_section}"
             f"{history_section}\n\n"
             f"{numbering_rule}\n"
             f"{audio_rule}"
+            f"{voice_binding_rule}"
             f"{dialogue_rule}"
+            f"{plot_boundary_rule}"
             f"每个Part的时长不超过 {part_duration} 秒（可根据剧情节奏灵活调整，只要不超过此上限）。\n"
             "请严格遵守系统提示词中的输出格式和镜头规则。注意动作连贯性与正反打剪辑规范。"
         )
@@ -331,6 +382,8 @@ class AutoAnimeStoryboardPipeline:
             
             refine_prompt = (
                 "精修以下分镜，只修复明确问题，不重写剧情。\n"
+                "【剧情边界硬约束】：不得新增、补写或推断当前页之外的剧情；不得新增事件、反转、人物决定、地点、道具、对白或结局。"
+                "只允许修复镜头可执行性、时间、站位、对白时长和格式；若原稿包含无依据的后续剧情，必须删除或改为当前页可见的未完成状态。\n"
                 f"当前处理序号：{index}/{len(parts)}；原始Part编号：{part_number}。\n"
                 f"每个Part时长不超过 {part_duration} 秒（可根据剧情需要灵活调整，只要不超过此上限）。\n"
                 f"本次声明参考图 {reference_count} 张；实际上传 {len(pil_images)} 张。\n"
@@ -355,6 +408,7 @@ class AutoAnimeStoryboardPipeline:
         summary_prompt = (
             "请根据以下新生成的动画分镜剧本，写一段精炼的剧情摘要（约100-200字），"
             "总结这段剧情里发生了什么核心事件、人物情感有什么变化、场景有无转换。\n\n"
+            "只能总结文本中明确发生或明确展示的内容，禁止补充后续剧情、推断结果、添加反转或预测下一页。\n\n"
             f"{new_refined_text}"
         )
         current_batch_summary = self._call_model(
@@ -365,7 +419,7 @@ class AutoAnimeStoryboardPipeline:
         if previous_summary and previous_summary.strip():
             # 滚动合并总结
             merge_summary_prompt = (
-                f"请将【已有剧情总总结】与【最新发生的剧情总结】融合成一个更全面、连贯的演进式故事大纲摘要（保留前因后果，控制在300字以内）：\n\n"
+                f"请将【已有剧情总总结】与【最新发生的剧情总结】融合成一个更全面、连贯的演进式故事大纲摘要（保留前因后果，控制在300字以内）。只能保留输入中明确发生的内容，禁止新增后续事件、预测剧情或补写结局：\n\n"
                 f"【已有剧情总总结】：\n{previous_summary.strip()}\n\n"
                 f"【最新发生的剧情总结】：\n{current_batch_summary}"
             )
@@ -376,8 +430,9 @@ class AutoAnimeStoryboardPipeline:
         else:
             updated_summary = current_batch_summary
 
-        # 3. 拼接全局历史文本
-        if history_context and history_context.strip():
+        # 3. 当前页输出默认只返回本次新生成内容。历史/上一页摘要仍作为
+        # 输入上下文参与生成，但不会把旧分镜再次叠加到当前页结果。
+        if history_context and history_context.strip() and not return_current_page_only:
             final_text = history_context.strip() + "\n\n" + new_refined_text
         else:
             final_text = new_refined_text
@@ -388,7 +443,8 @@ class AutoAnimeStoryboardPipeline:
         summary_md = output_path / "anime_storyboard_summary.md"
         summary_md.write_text(updated_summary, encoding="utf-8")
 
-        status = f"完成：成功生成 {len(parts)} 个新 Part（从 Part {next_start_part} 开始）。全局剧情已更新。"
+        summary_label = "当前页摘要" if return_current_page_only else "全局剧情摘要"
+        status = f"完成：成功生成 {len(parts)} 个新 Part（从 Part {next_start_part} 开始）。已返回当前页分镜与{summary_label}。"
         logger.info(status)
         
         return (final_text, updated_summary, str(output_path), status)

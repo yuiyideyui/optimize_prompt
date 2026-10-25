@@ -998,6 +998,42 @@ class AssetRepository:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def delete_asset(self, project_id: str, asset_id: str) -> Dict[str, Any]:
+        """Delete an asset and its file, restoring the file if the DB transaction fails."""
+        import uuid
+
+        backup = None
+        moved = False
+        try:
+            with self.database.connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM assets WHERE project_id = ? AND asset_id = ?",
+                    (project_id, asset_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("Asset does not exist in this project.")
+                asset = dict(row)
+                path = self._asset_path(asset["relative_path"])
+                backup = path.with_name(path.name + ".delete-" + uuid.uuid4().hex)
+                if path.exists():
+                    if not path.is_file():
+                        raise ValueError("Asset path is not a regular file.")
+                    path.replace(backup)
+                    moved = True
+                connection.execute("DELETE FROM asset_reviews WHERE asset_id = ?", (asset_id,))
+                connection.execute("DELETE FROM asset_relations WHERE project_id = ? AND asset_id = ?", (project_id, asset_id))
+                connection.execute("DELETE FROM asset_generation_outputs WHERE asset_id = ?", (asset_id,))
+                connection.execute("DELETE FROM assets WHERE project_id = ? AND asset_id = ?", (project_id, asset_id))
+        except Exception:
+            if moved and backup is not None and backup.exists():
+                backup.replace(path)
+            raise
+        if moved and backup is not None:
+            backup.unlink()
+        asset["deleted"] = True
+        asset["file_deleted"] = moved
+        return asset
+
     def load_asset_records(
         self, project_id: str, asset_ids: Sequence[str], allow_unapproved: bool = False
     ) -> List[Dict[str, Any]]:

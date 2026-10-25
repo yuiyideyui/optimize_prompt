@@ -19,7 +19,10 @@ class ComicPageContextBuilder:
                 "history_pages": ("INT", {"default": 3, "min": 0, "max": 20}),
                 "retrieval_limit": ("INT", {"default": 8, "min": 1, "max": 100}),
                 "context_budget": ("INT", {"default": 9000, "min": 1000, "max": 50000}),
-            }
+            },
+            "optional": {
+                "pages": ("COMIC_PAGES",),
+            },
         }
 
     RETURN_TYPES = ("STRING", "COMIC_KNOWLEDGE", "STRING")
@@ -36,9 +39,18 @@ class ComicPageContextBuilder:
         history_pages: int,
         retrieval_limit: int,
         context_budget: int = 9000,
+        pages=None,
     ):
         database = ComicDatabase(get_data_root() / "comic2anime.sqlite3")
         database.initialize()
+        # The loader output may be served from ComfyUI's cache while the
+        # SQLite database was deleted, moved, or created by another run.
+        # Reconcile the page batch before context lookup so chapter existence
+        # is based on the actual COMIC_PAGES value entering this node.
+        if pages is not None:
+            if not isinstance(pages, list) or not pages:
+                raise ValueError("pages must contain at least one imported page.")
+            database.save_pages(pages)
         previous, knowledge = build_page_context(
             database,
             project_id,

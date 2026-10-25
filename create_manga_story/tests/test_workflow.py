@@ -16,10 +16,15 @@ from create_manga_story.core.database import ComicDatabase
 from create_manga_story.core.workflow_repository import ComicWorkflowRepository
 from create_manga_story.nodes.asset_workflow_nodes import (
     ComicAssetReferenceSelector,
+    ComicAssetBatchGenerationLoop,
+    ComicAssetWorkflowStatus,
     ComicAssetWorkflowRegistrar,
     GeminiQwenAssetGenerationLoop,
     GeminiAssetPromptGenerator,
     GeminiAssetVisualQC,
+    _qwen2_extraction_directive,
+    _reusable_generation,
+    _stack_batch_images,
 )
 from create_manga_story.nodes.story_workflow_nodes import (
     ComicAdaptationPlanSaver,
@@ -547,7 +552,10 @@ class ComicWorkflowTests(unittest.TestCase):
             QwenImageEditCustomNode,
             "edit_image",
             side_effect=[(first_output,), (second_output,)],
-        ) as qwen:
+        ) as qwen, patch(
+            "create_manga_story.api.seedvr2_upscaler.upscale_confirmed_image",
+            side_effect=lambda image: image,
+        ) as upscale:
             latest, report, decision = GeminiQwenAssetGenerationLoop().generate(
                 self.request,
                 json.dumps([{
@@ -582,7 +590,7 @@ class ComicWorkflowTests(unittest.TestCase):
         self.assertTrue(api_calls[3][1][0][0].startswith(b"\x89PNG"))
         self.assertEqual(
             [entry["asset_status"] for entry in report["attempts"]],
-            ["candidate", "candidate"],
+            [None, "candidate"],
         )
         with self.database.connect() as connection:
             iteration_statuses = [
@@ -593,6 +601,351 @@ class ComicWorkflowTests(unittest.TestCase):
                 )
             ]
         self.assertEqual(iteration_statuses, ["retry_pending", "pass_candidate"])
+
+    def test_reference_selector_rejects_missing_reference_asset(self):
+        with patch(
+            "create_manga_story.nodes.asset_workflow_nodes._repository",
+            return_value=self.assets,
+        ):
+            with self.assertRaises(ValueError):
+                ComicAssetReferenceSelector().select(
+                    "project-1",
+                    self.request,
+                    json.dumps([{
+                        "asset_id": "does-not-exist",
+                        "role": "character_identity",
+                        "reason": "missing reference",
+                    }]),
+                )
+
+    def test_reference_selector_crops_transient_page_source(self):
+        page_path = self.root / "page-1.png"
+        Image.new("RGB", (10, 8), (120, 80, 40)).save(page_path)
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE pages SET image_path = ? WHERE page_id = 'page-1'",
+                (str(page_path),),
+            )
+        torch_shim = SimpleNamespace(from_numpy=lambda array: array)
+        request = dict(self.request)
+        request["entity_type"] = "location"
+        request["entity_id"] = "location-1"
+        with self.database.connect() as connection:
+            connection.execute(
+                "INSERT INTO locations(location_id, project_id, canonical_name, stable_description) "
+                "VALUES ('location-1', 'project-1', 'palace', 'palace')"
+            )
+        with patch.dict(sys.modules, {"torch": torch_shim}), patch(
+            "create_manga_story.nodes.asset_workflow_nodes._repository",
+            return_value=self.assets,
+        ):
+            image1, _, _, manifest, _ = ComicAssetReferenceSelector().select(
+                "project-1",
+                request,
+                json.dumps([{
+                    "source_page_id": "page-1",
+                    "role": "scene_reference",
+                    "reason": "first page source",
+                    "crop_box": {"x": 0.2, "y": 0.25, "width": 0.5, "height": 0.5},
+                }]),
+            )
+        self.assertEqual(image1.shape, (1, 4, 5, 3))
+        self.assertEqual(manifest[0]["reference_kind"], "page_source_crop")
+        self.assertAlmostEqual(manifest[0]["crop_box"]["width"], 0.5)
+
+    def test_workflow_registrar_does_not_register_non_pass_qc(self):
+        prompt = {
+            "prompt_version": 1,
+            "detailed_description": "Keep the approved identity.",
+            "reference_usage": [],
+            "must_preserve": ["identity"],
+            "allowed_changes": [],
+            "negative_constraints": ["no identity change"],
+            "uncertainties": [],
+            "validation_checklist": ["identity"],
+        }
+        qc = {
+            "request_id": "request-1",
+            "attempt_index": 0,
+            "decision": "RETRY",
+            "overall_score": 0.4,
+            "checks": [{
+                "category": "identity",
+                "result": "FAIL",
+                "severity": "high",
+                "evidence": "The generated face does not match.",
+            }],
+            "failures": ["identity mismatch"],
+            "uncertainties": [],
+            "prompt_revision_instructions": ["Restore the approved identity."],
+            "reference_revision_instructions": [],
+            "human_review_required": False,
+        }
+        image_tensor = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        with patch(
+            "create_manga_story.nodes.asset_workflow_nodes._repository",
+            return_value=self.assets,
+        ):
+            assets, report = ComicAssetWorkflowRegistrar().register(
+                image_tensor,
+                self.request,
+                prompt,
+                "[]",
+                json.dumps(qc),
+                0,
+                "retry candidate",
+                -1,
+                "{}",
+            )
+        self.assertEqual(assets, [])
+        self.assertFalse(report["registered"])
+        self.assertEqual(report["workflow_status"], "retry_pending")
+        with self.database.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM assets WHERE project_id = 'project-1'"
+                ).fetchone()[0],
+                0,
+            )
+            iteration = connection.execute(
+                "SELECT status FROM asset_workflow_iterations WHERE request_id = 'request-1'"
+            ).fetchone()
+        self.assertEqual(iteration["status"], "retry_pending")
+
+    def test_generation_loop_persists_qwen_failure(self):
+        reference = self.assets.register_batch(
+            "project-1",
+            "character_portrait",
+            [{"content": _image(), "width": 3, "height": 2, "mime_type": "image/png"}],
+            entity_type="character",
+            entity_id="character-1",
+            generation_run_id="failure-reference",
+        )["assets"][0]
+        self.assets.review_asset("project-1", reference["asset_id"], "approved", "verified")
+        prompt = {
+            "prompt_version": 1,
+            "detailed_description": "Keep the approved identity.",
+            "reference_usage": [{
+                "reference_asset_id": reference["asset_id"],
+                "role": "character_identity",
+                "instruction": "Use this image for identity.",
+            }],
+            "must_preserve": ["identity"],
+            "allowed_changes": [],
+            "negative_constraints": [],
+            "uncertainties": [],
+            "validation_checklist": ["identity"],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_workflow_nodes._repository",
+            return_value=self.assets,
+        ), patch(
+            "create_manga_story.nodes.asset_workflow_nodes.generate_structured_json",
+            return_value=prompt,
+        ), patch.object(
+            QwenImageEditCustomNode,
+            "edit_image",
+            side_effect=RuntimeError("model unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                GeminiQwenAssetGenerationLoop().generate(
+                    self.request,
+                    json.dumps([{
+                        "asset_id": reference["asset_id"],
+                        "role": "character_identity",
+                        "reason": "approved identity reference",
+                    }]),
+                    "qwen-model.safetensors",
+                    "clip.safetensors",
+                    "vae.safetensors",
+                    10,
+                    20,
+                    4.0,
+                    0,
+                    0.8,
+                    "api-key",
+                    "gemini-test",
+                    "https://example.invalid",
+                    10,
+                    0,
+                )
+        with self.database.connect() as connection:
+            run = connection.execute(
+                "SELECT status, error_message FROM asset_generation_runs "
+                "WHERE project_id = 'project-1' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("model unavailable", run["error_message"])
+
+    def test_workflow_status_returns_request_and_iterations(self):
+        workflow = ComicWorkflowRepository(self.database)
+        workflow.initialize()
+        workflow.save_asset_request("project-1", self.request)
+        workflow.save_asset_iteration(
+            "request-1",
+            0,
+            {"prompt_version": 1, "detailed_description": "test"},
+            [],
+            {"decision": "RETRY"},
+            status="retry_pending",
+        )
+        with patch(
+            "create_manga_story.nodes.asset_workflow_nodes._repository",
+            return_value=self.assets,
+        ):
+            status_json = ComicAssetWorkflowStatus().get_status("request-1", "project-1")[0]
+        status = json.loads(status_json)
+        self.assertEqual(status["status"], "retry_pending")
+        self.assertEqual(status["iterations"][0]["attempt_index"], 0)
+        self.assertEqual(status["iterations"][0]["qc_report"]["decision"], "RETRY")
+
+    def test_batch_generation_continues_after_single_request_failure(self):
+        first = {"request_id": "request-1", "project_id": "project-1", "asset_type": "character_portrait"}
+        second = {"request_id": "request-2", "project_id": "project-1", "asset_type": "character_portrait"}
+        reports = [
+            (None, {"request_id": "request-1"}, "PASS"),
+            RuntimeError("temporary model failure"),
+        ]
+        with patch.object(
+            GeminiQwenAssetGenerationLoop,
+            "generate",
+            side_effect=reports,
+        ):
+            latest, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
+                json.dumps([
+                    {"asset_request": first, "references": []},
+                    {"asset_request": second, "references": []},
+                ]),
+                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                "", "gemini-test", "https://example.invalid", 10, 0,
+            )
+        report = json.loads(report_json)
+        self.assertIsNone(latest)
+        self.assertEqual(decision, "PARTIAL_FAILURE")
+        self.assertEqual(report["succeeded"], 1)
+        self.assertEqual(report["failed"], 1)
+        self.assertEqual(report["results"][1]["decision"], "ERROR")
+
+    def test_successful_asset_is_reused_by_page_hash_and_character_identity(self):
+        saved = self.assets.register_batch(
+            project_id="project-1",
+            asset_type="character_turnaround",
+            images=[{"content": _image(), "width": 3, "height": 2}],
+            generation_run_id="prior-page-character",
+            entity_type="character",
+            entity_id="character-1",
+            parameters={
+                "source_page_hash": "same-page-hash",
+                "entity_type": "character",
+                "entity_id": "character-1",
+                "identity_key": "name:ari",
+            },
+        )["assets"][0]
+        request = {
+            "project_id": "project-1",
+            "asset_type": "character_portrait",
+            "entity_type": "character",
+            "entity_id": "new-page-local-candidate-id",
+            "identity_key": "name:ari",
+            "source_page_hash": "same-page-hash",
+        }
+        reused = _reusable_generation(self.assets, request)
+        self.assertEqual(reused["assets"][0]["asset_id"], saved["asset_id"])
+
+    def test_character_generation_prompt_requires_front_side_back_triptych(self):
+        prompt = _qwen2_extraction_directive({"asset_type": "character_portrait"})
+        self.assertIn("EXACTLY THREE", prompt)
+        self.assertIn("front view, true side profile, and back view", prompt)
+        self.assertIn("pure white", prompt.lower())
+        self.assertIn("facial-expression row", prompt)
+
+    def test_scene_generation_prompt_requires_text_and_people_removal(self):
+        prompt = _qwen2_extraction_directive({"asset_type": "scene_reference"})
+        self.assertIn("Remove every visible person", prompt)
+        self.assertIn("speech bubbles, text", prompt)
+
+    def test_batch_generation_skips_pages_without_characters(self):
+        latest, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
+            "[]", "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+            "", "gemini-test", "https://example.invalid", 10, 0,
+        )
+        report = json.loads(report_json)
+        self.assertIsNone(latest)
+        self.assertEqual(decision, "NO_CHARACTERS")
+        self.assertEqual(report["total"], 0)
+
+    def test_batch_generation_returns_all_images_as_one_batch(self):
+        first = {"request_id": "request-1", "project_id": "project-1", "asset_type": "character_portrait"}
+        second = {"request_id": "request-2", "project_id": "project-1", "asset_type": "scene_reference"}
+        image1 = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        image2 = np.ones((1, 3, 4, 3), dtype=np.float32)
+        with patch.object(
+            GeminiQwenAssetGenerationLoop,
+            "generate",
+            side_effect=[
+                (image1, {"request_id": "request-1"}, "PASS"),
+                (image2, {"request_id": "request-2"}, "PASS"),
+            ],
+        ):
+            batch, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
+                json.dumps([
+                    {"asset_request": first, "references": []},
+                    {"asset_request": second, "references": []},
+                ]),
+                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                "", "gemini-test", "https://example.invalid", 10, 0,
+            )
+        report = json.loads(report_json)
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(batch.shape, (2, 3, 4, 3))
+        self.assertEqual(report["output_image_count"], 2)
+        self.assertEqual([item["output_index"] for item in report["results"]], [0, 1])
+
+    def test_batch_cache_reloads_reused_asset_into_batch_images(self):
+        request = {
+            "request_id": "cached-request",
+            "project_id": "project-1",
+            "asset_type": "character_portrait",
+            "entity_type": "character",
+            "entity_id": "character-1",
+            "source_page_hash": "cached-page",
+        }
+        self.assets.register_batch(
+            project_id="project-1",
+            asset_type="character_portrait",
+            images=[{"content": _image(), "width": 3, "height": 2}],
+            generation_run_id="cached-run",
+            entity_type="character",
+            entity_id="character-1",
+            parameters={
+                "source_page_hash": "cached-page",
+                "entity_type": "character",
+                "entity_id": "character-1",
+            },
+        )
+        cached_image = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        with patch("create_manga_story.nodes.asset_workflow_nodes._repository", return_value=self.assets), \
+             patch("create_manga_story.nodes.asset_workflow_nodes._load_asset_image", return_value=cached_image), \
+             patch.object(GeminiQwenAssetGenerationLoop, "generate") as generate:
+            batch, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
+                json.dumps([{"asset_request": request, "references": []}]),
+                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                "", "gemini-test", "https://example.invalid", 10, 0,
+            )
+        report = json.loads(report_json)
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(report["results"][0]["decision"], "REUSED")
+        self.assertEqual(batch.shape, (1, 2, 3, 3))
+        generate.assert_not_called()
+
+    def test_stack_batch_images_normalizes_rgb_rgba_and_grayscale(self):
+        rgb = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        rgba = np.ones((1, 3, 2, 4), dtype=np.float32)
+        gray = np.full((1, 1, 1, 1), 0.5, dtype=np.float32)
+        batch = _stack_batch_images([rgb, rgba, gray])
+        self.assertEqual(batch.shape, (3, 3, 3, 3))
+        self.assertTrue(np.allclose(batch[1, :3, :2, :], 1.0))
+        self.assertTrue(np.allclose(batch[2, :1, :1, :], 0.5))
 
 
 if __name__ == "__main__":

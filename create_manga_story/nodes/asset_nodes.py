@@ -16,6 +16,94 @@ def _repository() -> AssetRepository:
     return AssetRepository()
 
 
+def _normalized_entry_crop(crop_box: Any, page: Optional[Dict[str, Any]]) -> Any:
+    """Accept Gemini crop boxes in normalized or source-image pixel units."""
+    if not isinstance(crop_box, dict):
+        return crop_box
+    try:
+        values = [float(crop_box[key]) for key in ("x", "y", "width", "height")]
+    except (KeyError, TypeError, ValueError):
+        return crop_box
+    if max(abs(value) for value in values) <= 1.0:
+        return crop_box
+    if not isinstance(page, dict):
+        return crop_box
+    try:
+        page_width = float(page.get("width", 0))
+        page_height = float(page.get("height", 0))
+    except (TypeError, ValueError):
+        return crop_box
+    if page_width <= 0 or page_height <= 0:
+        return crop_box
+    # Gemini may mix normalized and pixel components. Convert each component
+    # independently so old cached analyses remain usable as well.
+    x = values[0] * page_width if 0.0 <= values[0] <= 1.0 else values[0]
+    y = values[1] * page_height if 0.0 <= values[1] <= 1.0 else values[1]
+    width = values[2] * page_width if 0.0 < values[2] <= 1.0 else values[2]
+    height = values[3] * page_height if 0.0 < values[3] <= 1.0 else values[3]
+    left = max(0.0, min(page_width - 1.0, x))
+    top = max(0.0, min(page_height - 1.0, y))
+    right = max(left + 1.0, min(page_width, left + max(1.0, width)))
+    bottom = max(top + 1.0, min(page_height, top + max(1.0, height)))
+    padding = float(crop_box.get("padding", 0.0) or 0.0)
+    if padding > 1.0:
+        padding /= max(page_width, page_height)
+    return {
+        "x": left / page_width,
+        "y": top / page_height,
+        "width": (right - left) / page_width,
+        "height": (bottom - top) / page_height,
+        "padding": max(0.0, padding),
+    }
+
+
+def _gemini_reference_quality(entry: Dict[str, Any]) -> float:
+    """Rank repeated occurrences using Gemini's visual-quality decision."""
+    source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+    for container in (entry, source):
+        for key in ("reference_quality", "clarity_score", "visual_quality"):
+            try:
+                value = float(container.get(key))
+            except (TypeError, ValueError):
+                continue
+            if 0.0 <= value <= 1.0:
+                return value
+    for container in (entry, source):
+        if container.get("is_best_reference") is True:
+            return 1.0
+    crop = entry.get("crop_box") or source.get("crop_box")
+    area = 0.0
+    if isinstance(crop, dict):
+        try:
+            area = max(0.0, float(crop.get("width", 0))) * max(0.0, float(crop.get("height", 0)))
+        except (TypeError, ValueError):
+            area = 0.0
+    detail = sum(bool(entry.get(key) or source.get(key)) for key in (
+        "appearance", "clothing", "description", "visual_state", "action"
+    ))
+    confidence = float(entry.get("confidence", 0.0) or 0.0)
+    return min(0.99, 0.35 + min(area, 1.0) * 0.35 + detail * 0.05 + confidence * 0.25)
+
+
+def _is_macro_location(entry: Dict[str, Any]) -> bool:
+    """Reject incidental location fragments before creating image requests."""
+    scope = str(entry.get("scene_scope", "")).strip().lower()
+    if scope in {"detail", "object", "incidental", "background_fragment"}:
+        return False
+    source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+    text = " ".join(
+        str(container.get(key, ""))
+        for container in (entry, source)
+        for key in ("name", "description", "visual_state")
+    ).lower()
+    return not any(marker in text for marker in (
+        "corner", "角落", "桌面", "tabletop", "window sill", "窗台",
+        "chair", "椅子", "weapon", "武器", "wall section", "墙面",
+        "close-up detail", "局部细节", "background object", "背景物件",
+        "prop", "道具", "floor detail", "地面局部",
+    ))
+
+
 def _encode_comfy_images(image: Any) -> List[Dict[str, Any]]:
     try:
         import numpy as np
@@ -271,6 +359,559 @@ class ComicAssetRequestBuilder:
             prompt,
             json.dumps(request["reference_asset_ids"], ensure_ascii=False),
             json.dumps(warnings, ensure_ascii=False),
+        )
+
+
+class ComicAssetAutoTargetBuilder:
+    """Build an asset request from confirmed entity resolution and approved refs.
+
+    The node intentionally refuses ambiguous or unconfirmed entities. This
+    keeps automatic generation deterministic without turning an LLM guess into
+    an entity or reference-asset selection.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "project_id": ("STRING", {"default": ""}),
+                "entity_resolution": ("COMIC_ENTITY_RESOLUTION",),
+                "asset_type": (ASSET_TYPES,),
+                "generation_goal": ("STRING", {"default": "reference image"}),
+                "minimum_match_confidence": (
+                    "FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0}
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("COMIC_ASSET_REQUEST", "STRING", "STRING")
+    RETURN_NAMES = ("asset_request", "approved_references_json", "target_report_json")
+    FUNCTION = "build_auto_request"
+    CATEGORY = "Comic2Anime/Assets"
+
+    def build_auto_request(
+        self,
+        project_id: str,
+        entity_resolution: Dict[str, Any],
+        asset_type: str,
+        generation_goal: str,
+        minimum_match_confidence: float = 0.75,
+    ):
+        if isinstance(entity_resolution, str):
+            try:
+                entity_resolution = json.loads(entity_resolution)
+            except json.JSONDecodeError as exc:
+                raise ValueError("entity_resolution must contain valid JSON.") from exc
+        if not isinstance(entity_resolution, dict):
+            raise ValueError("entity_resolution must be a JSON object.")
+        if not project_id.strip():
+            raise ValueError("project_id is required.")
+        if asset_type not in ASSET_TYPES:
+            raise ValueError("Unsupported asset_type: {}".format(asset_type))
+        if not 0.0 <= minimum_match_confidence <= 1.0:
+            raise ValueError("minimum_match_confidence must be between 0 and 1.")
+
+        candidates = []
+        pending_candidates = []
+        for entity_type, key in (("character", "characters"), ("location", "locations")):
+            entries = entity_resolution.get(key, [])
+            if not isinstance(entries, list):
+                raise ValueError("entity_resolution.{} must be an array.".format(key))
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                confidence = float(entry.get("confidence", 0.0))
+                base = {
+                        "entity_type": entity_type,
+                        "entity_id": entry.get("entity_id", ""),
+                        "matched_entity_id": entry.get("matched_entity_id", ""),
+                        "confidence": confidence,
+                        "source_index": entry.get("source_index"),
+                        "source": entry.get("source", {}),
+                    }
+                if (
+                    entry.get("status") == "confirmed_match"
+                    and isinstance(base["entity_id"], str)
+                    and base["entity_id"].strip()
+                ):
+                    base["selection_status"] = "confirmed_match"
+                    candidates.append(base)
+                elif (
+                    entry.get("status") == "pending_review"
+                    and isinstance(base["matched_entity_id"], str)
+                    and base["matched_entity_id"].strip()
+                    and confidence >= minimum_match_confidence
+                ):
+                    base["entity_id"] = base["matched_entity_id"]
+                    base["selection_status"] = "unique_pending_match"
+                    pending_candidates.append(base)
+        if not candidates:
+            candidates = pending_candidates
+        if not candidates:
+            raise ValueError(
+                "No confirmed or unique high-confidence matched entity is available "
+                "for automatic asset generation; human review is required."
+            )
+        candidates.sort(
+            key=lambda item: (-item["confidence"], item["entity_type"], item["entity_id"])
+        )
+        selected = candidates[0]
+        if len(candidates) > 1 and candidates[1]["confidence"] == selected["confidence"]:
+            raise ValueError(
+                "Automatic entity selection is ambiguous; multiple confirmed entities "
+                "have the same confidence."
+            )
+
+        repo = _repository()
+        repo.initialize()
+        assets = repo.get_reference_assets(
+            project_id, selected["entity_type"], selected["entity_id"]
+        )
+        if not assets:
+            raise ValueError(
+                "No approved reference assets are linked to confirmed entity {}.".format(
+                    selected["entity_id"]
+                )
+            )
+        assets = assets[:3]
+        role = "character_identity" if selected["entity_type"] == "character" else "scene_reference"
+        references = [
+            {
+                "asset_id": asset["asset_id"],
+                "role": role,
+                "reason": "Automatically selected approved reference for confirmed entity.",
+            }
+            for asset in assets
+        ]
+        request = {
+            "schema_version": "1.0",
+            "request_id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "entity_type": selected["entity_type"],
+            "entity_id": selected["entity_id"],
+            "asset_type": asset_type,
+            "generation_goal": generation_goal,
+            "reference_asset_ids": [item["asset_id"] for item in references],
+            "source_evidence": [selected["source"]],
+            "warnings": (
+                []
+                if selected["selection_status"] == "confirmed_match"
+                else [
+                    "Automatic target selection used a unique pending match with "
+                    "sufficient confidence. Review the generated candidate before approval."
+                ]
+            ),
+        }
+        report = {
+            "selection_policy": "highest_confidence_confirmed_entity",
+            "selected_entity": selected,
+            "approved_reference_asset_ids": request["reference_asset_ids"],
+            "candidate_count": len(candidates),
+        }
+        return (
+            request,
+            json.dumps(references, ensure_ascii=False),
+            json.dumps(report, ensure_ascii=False),
+        )
+
+
+class ComicAssetAutoTargetBatchBuilder:
+    """Create one automatic asset request for every page character/location.
+
+    Entity resolution is page-local evidence, so it is intentionally not
+    filtered by confirmed/pending status or confidence here.  The knowledge
+    base updater is connected as an execution dependency in the workflow;
+    ``matched_entity_id`` is preferred for an existing match, with
+    ``entity_id`` as the fallback for a new candidate. Only approved
+    references are selected. An entity without one is returned as
+    ``NEEDS_REFERENCE`` so the batch can continue with other page entities.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "project_id": ("STRING", {"default": ""}),
+                "entity_resolution": ("COMIC_ENTITY_RESOLUTION",),
+                "asset_type": (ASSET_TYPES,),
+                "generation_goal": ("STRING", {"default": "reference image"}),
+            },
+            "optional": {
+                "update_report": ("COMIC_KB_UPDATE_REPORT",),
+                "pages": ("COMIC_PAGES",),
+                "page_index": ("INT", {"default": 1, "min": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("requests_json", "target_report_json")
+    FUNCTION = "build_requests"
+    CATEGORY = "Comic2Anime/Assets"
+
+    @staticmethod
+    def _should_generate_character(entry: Dict[str, Any], has_reference: bool) -> Tuple[bool, str]:
+        """Keep minor/page-only figures out of the asset-generation queue.
+
+        Existing character references are reused for partial views; a new sheet
+        may be generated for full views or an explicitly changed appearance.
+        """
+        explicit = entry.get("generate_asset")
+        if explicit is False:
+            return False, "entity_marked_nonessential"
+        importance = str(
+            entry.get("importance", entry.get("narrative_importance", ""))
+        ).strip().lower()
+        role = str(entry.get("role", entry.get("character_role", ""))).strip().lower()
+        if importance in {"minor", "low", "background", "incidental", "nonessential"}:
+            return False, "nonessential_character"
+        if role in {"background", "minor", "incidental", "crowd", "extra", "nonessential"}:
+            return False, "nonessential_character"
+        if has_reference:
+            source = entry.get("source")
+            crop_box = entry.get("crop_box")
+            if crop_box is None and isinstance(source, dict):
+                crop_box = source.get("crop_box")
+            crop_height = None
+            if isinstance(crop_box, dict):
+                try:
+                    crop_height = float(crop_box.get("height"))
+                except (TypeError, ValueError):
+                    crop_height = None
+            partial = (
+                entry.get("partial_view") is True
+                or entry.get("is_partial") is True
+                or (crop_height is not None and crop_height < 70)
+            )
+            change = any(
+                entry.get(key) is True
+                for key in ("appearance_changed", "new_outfit", "new_appearance", "needs_new_reference")
+            )
+            if partial and not change:
+                return False, "reuse_existing_reference_for_partial_view"
+        return True, "new_or_explicitly_changed_appearance"
+
+    def build_requests(
+        self,
+        project_id: str,
+        entity_resolution: Dict[str, Any],
+        asset_type: str,
+        generation_goal: str,
+        update_report: Optional[Dict[str, Any]] = None,
+        pages: Optional[List[Dict[str, Any]]] = None,
+        page_index: int = 1,
+    ):
+        if isinstance(entity_resolution, str):
+            try:
+                entity_resolution = json.loads(entity_resolution)
+            except json.JSONDecodeError as exc:
+                raise ValueError("entity_resolution must contain valid JSON.") from exc
+        if not isinstance(entity_resolution, dict):
+            raise ValueError("entity_resolution must be a JSON object.")
+        if not project_id.strip():
+            raise ValueError("project_id is required.")
+        if asset_type not in ASSET_TYPES:
+            raise ValueError("Unsupported asset_type: {}".format(asset_type))
+
+        repo = _repository()
+        repo.initialize()
+        source_page = None
+        resolution_page_id = entity_resolution.get("page_id")
+        if isinstance(resolution_page_id, str) and resolution_page_id:
+            with repo.database.connect() as connection:
+                row = connection.execute(
+                        "SELECT page_id, sha256, width, height FROM pages WHERE project_id = ? AND page_id = ?",
+                    (project_id, resolution_page_id),
+                ).fetchone()
+            if row:
+                source_page = dict(row)
+        if pages is not None:
+            if not isinstance(pages, list) or not pages:
+                raise ValueError("pages must contain at least one imported page.")
+            if page_index < 1 or page_index > len(pages):
+                raise ValueError("page_index must select an imported page (1-based).")
+            source_page = pages[page_index - 1]
+            if not isinstance(source_page, dict) or not source_page.get("page_id"):
+                raise ValueError("Selected source page is missing page_id.")
+        if source_page is None:
+            source_page_id = None
+            for entries_key in ("characters", "locations"):
+                entries = entity_resolution.get(entries_key, [])
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if isinstance(entry, dict):
+                            candidate = entry.get("source_page_id") or entry.get("page_id")
+                            if not candidate and isinstance(entry.get("source"), dict):
+                                candidate = entry["source"].get("source_page_id") or entry["source"].get("page_id")
+                            if candidate:
+                                source_page_id = candidate
+                                break
+                if source_page_id:
+                    break
+            if source_page_id:
+                with repo.database.connect() as connection:
+                    row = connection.execute(
+                        "SELECT page_id, sha256, width, height FROM pages WHERE project_id = ? AND page_id = ?",
+                        (project_id, source_page_id),
+                    ).fetchone()
+                if row:
+                    source_page = dict(row)
+        if source_page is not None and (
+            not source_page.get("width") or not source_page.get("height")
+        ):
+            with repo.database.connect() as connection:
+                row = connection.execute(
+                    "SELECT width, height FROM pages WHERE project_id = ? AND page_id = ?",
+                    (project_id, source_page["page_id"]),
+                ).fetchone()
+            if row:
+                source_page.update(dict(row))
+        requests = []
+        report_items = []
+        seen = set()
+        source_counts = {"character": 0, "location": 0}
+        entity_groups = (
+            ("character", "characters", "character_identity"),
+            ("location", "locations", "scene_reference"),
+        )
+        for entity_type, key, reference_role in entity_groups:
+            entries = entity_resolution.get(key, [])
+            if not isinstance(entries, list):
+                raise ValueError("entity_resolution.{} must be an array.".format(key))
+            source_counts[entity_type] = len(entries)
+            # Gemini returns every occurrence, but repeated occurrences of one
+            # entity must use the clearest crop as the generation source.  Sort
+            # quality-first before the existing identity de-duplication logic.
+            entries = sorted(
+                entries,
+                key=lambda item: (
+                    -_gemini_reference_quality(item) if isinstance(item, dict) else 0.0,
+                    int(item.get("source_index", 0)) if isinstance(item, dict) and str(item.get("source_index", "")).isdigit() else 0,
+                ),
+            )
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                if entity_type == "location" and not _is_macro_location(entry):
+                    report_items.append({
+                        "entity_type": "location",
+                        "source_index": entry.get("source_index", index),
+                        "status": "SKIP_INCIDENTAL_LOCATION",
+                        "skip_reason": "Only macro reusable locations are eligible for asset generation.",
+                        "name": entry.get("name", ""),
+                    })
+                    continue
+                # A matcher may retain a deterministic candidate id in
+                # entity_id while matched_entity_id points at the real entity.
+                entity_id = entry.get("matched_entity_id") or entry.get("entity_id")
+                if not isinstance(entity_id, str) or not entity_id.strip():
+                    # Raw Gemini analysis can arrive before entity matching. Keep
+                    # every distinct visible character/location as a page-local
+                    # candidate instead of dropping all but the first one.
+                    source_data = entry.get("source", {})
+                    source_name = (
+                        source_data.get("name") or source_data.get("identity_candidate")
+                        if isinstance(source_data, dict) else ""
+                    ) or entry.get("name") or entry.get("identity_candidate") or entity_type
+                    entity_id = "{}-candidate-{}".format(
+                        entity_type,
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            "{}:{}:{}:{}:{}".format(
+                                project_id,
+                                source_page.get("page_id") if source_page else entity_resolution.get("page_id", ""),
+                                source_name,
+                                entry.get("panel_index", index),
+                                index,
+                            ),
+                        ),
+                    )
+                entity_id = entity_id.strip()
+                source = entry.get("source", {})
+                entry_crop_box = _normalized_entry_crop(
+                    entry.get("crop_box")
+                    or (source.get("crop_box") if isinstance(source, dict) else None),
+                    source_page,
+                )
+                raw_identity = (
+                    (source.get("identity_candidate") or source.get("name"))
+                    if isinstance(source, dict) else ""
+                ) or entry.get("identity_candidate") or entry.get("name")
+                normalized_identity = "".join(
+                    char.casefold() for char in str(raw_identity) if char.isalnum()
+                )
+                if entity_type == "location":
+                    # Gemini returns every visible occurrence.  A stable
+                    # same_location_key (or a matched DB entity) identifies
+                    # the same macro setting across panels; entries were
+                    # sorted quality-first above, so the first one wins.
+                    same_location_key = str(entry.get("same_location_key", "")).strip()
+                    if same_location_key:
+                        identity_key = "location-same:" + same_location_key.casefold()
+                    elif entry.get("matched_entity_id"):
+                        identity_key = "location-id:" + str(entry["matched_entity_id"])
+                    else:
+                        crop_identity = entry_crop_box
+                        identity_key = "location:{}:{}:{}".format(
+                            entity_id,
+                            entry.get("panel_index", index),
+                            json.dumps(crop_identity or {}, sort_keys=True),
+                        )
+                else:
+                    identity_key = (
+                        "id:" + str(entry.get("matched_entity_id"))
+                        if entry.get("matched_entity_id")
+                        else "name:" + normalized_identity if normalized_identity
+                        else "id:" + entity_id
+                    )
+                unique_key = (entity_type, identity_key or entity_id)
+                if unique_key in seen:
+                    report_items.append({
+                        "entity_type": entity_type,
+                        "source_index": entry.get("source_index", index),
+                        "entity_id": entity_id,
+                        "status": "DUPLICATE_OCCURRENCE",
+                        "identity_key": identity_key,
+                    })
+                    continue
+                seen.add(unique_key)
+                references = repo.get_reference_assets(
+                    project_id, entity_type, entity_id
+                )[:3]
+                if entity_type == "character":
+                    should_generate, skip_reason = self._should_generate_character(
+                        entry, bool(references)
+                    )
+                    if not should_generate:
+                        report_items.append({
+                            "entity_type": entity_type,
+                            "source_index": entry.get("source_index", index),
+                            "entity_id": entity_id,
+                            "status": "REUSE_REFERENCE" if references else "SKIP_NONESSENTIAL",
+                            "skip_reason": skip_reason,
+                            "reused_reference_asset_ids": [
+                                asset["asset_id"] for asset in references
+                            ],
+                            "resolution_status": entry.get("status", ""),
+                            "confidence": entry.get("confidence", 0.0),
+                        })
+                        continue
+                reference_items = [
+                    {
+                        "asset_id": asset["asset_id"],
+                        "role": reference_role,
+                        "reason": "Automatically selected approved reference for page entity.",
+                    }
+                    for asset in references
+                ]
+                request_asset_type = asset_type
+                if entity_type == "location" and asset_type.startswith("character_"):
+                    request_asset_type = "scene_reference"
+                if not reference_items and source_page:
+                    source = entry.get("source", {})
+                    crop_box = entry_crop_box
+                    reference_items = [{
+                        "source_page_id": source_page["page_id"],
+                        "role": reference_role,
+                        "reason": "Current comic page used as the first transient reference.",
+                    }]
+                    if isinstance(crop_box, dict):
+                        reference_items[0]["crop_box"] = crop_box
+                    item_status = "READY_PAGE_SOURCE"
+                else:
+                    item_status = "READY" if reference_items else "NEEDS_REFERENCE"
+                request = {
+                    "schema_version": "1.0",
+                    "request_id": str(uuid.uuid4()),
+                    "project_id": project_id,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "identity_key": identity_key,
+                    "asset_type": request_asset_type,
+                    "generation_goal": generation_goal,
+                    "reference_asset_ids": [
+                        item["asset_id"]
+                        for item in reference_items
+                        if "asset_id" in item
+                    ],
+                    "source_evidence": [
+                        entry.get("source") if isinstance(entry.get("source"), dict) else entry
+                    ],
+                    # Keep Gemini's reference assessment with the request so
+                    # the image selector can add a full-page style/context
+                    # reference when the selected scene crop is too small or
+                    # visually unreliable.
+                    "reference_quality": _gemini_reference_quality(entry),
+                    "reference_quality_reason": entry.get(
+                        "reference_quality_reason", ""
+                    ),
+                    "same_location_key": entry.get("same_location_key", ""),
+                    "source_page_hash": source_page.get("sha256") if source_page else None,
+                    "source_page_id": source_page.get("page_id") if source_page else None,
+                    "warnings": [] if item_status in ("READY", "READY_PAGE_SOURCE") else [
+                        "No approved reference asset is available for this page entity."
+                    ],
+                }
+                if item_status == "READY_PAGE_SOURCE":
+                    if reference_items[0].get("crop_box") is not None:
+                        request["crop_box"] = reference_items[0]["crop_box"]
+                requests.append({
+                    "asset_request": request,
+                    "references": reference_items,
+                    "status": item_status,
+                })
+                report_items.append({
+                    "entity_type": entity_type,
+                    "source_index": entry.get("source_index", index),
+                    "entity_id": entity_id,
+                    "status": item_status,
+                    "approved_reference_asset_ids": request["reference_asset_ids"],
+                    "resolution_status": entry.get("status", ""),
+                    "confidence": entry.get("confidence", 0.0),
+                })
+
+        report = {
+            "selection_policy": "important_characters_only_reuse_existing_partial_views",
+            "total_entity_count": len(requests),
+            "character_count": sum(
+                item.get("entity_type") == "character" for item in report_items
+            ),
+            "location_count": sum(
+                item.get("entity_type") == "location" for item in report_items
+            ),
+            "source_character_count": source_counts["character"],
+            "source_location_count": source_counts["location"],
+            "ready_count": sum(
+                item["status"] in ("READY", "READY_PAGE_SOURCE")
+                for item in report_items
+            ),
+            "page_source_reference_count": sum(
+                item["status"] == "READY_PAGE_SOURCE" for item in report_items
+            ),
+            "needs_reference_count": sum(
+                item["status"] == "NEEDS_REFERENCE" for item in report_items
+            ),
+            "reused_reference_count": sum(
+                item["status"] == "REUSE_REFERENCE" for item in report_items
+            ),
+            "skipped_nonessential_count": sum(
+                item["status"] == "SKIP_NONESSENTIAL" for item in report_items
+            ),
+            "skipped_count": sum(
+                item["status"] in (
+                    "NEEDS_ENTITY_ID", "DUPLICATE_OCCURRENCE",
+                    "SKIP_INCIDENTAL_LOCATION",
+                )
+                for item in report_items
+            ),
+            "skipped_incidental_location_count": sum(
+                item["status"] == "SKIP_INCIDENTAL_LOCATION" for item in report_items
+            ),
+            "items": report_items,
+            "knowledge_base_update_dependency": bool(update_report is not None),
+        }
+        return (
+            json.dumps(requests, ensure_ascii=False),
+            json.dumps(report, ensure_ascii=False),
         )
 
 

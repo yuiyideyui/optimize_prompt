@@ -35,8 +35,24 @@ GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
                     "expression": {"type": "STRING"},
                     "action": {"type": "STRING"},
                     "emotion": {"type": "STRING"},
+                    "gender": {"type": "STRING"},
                     "confidence": {"type": "NUMBER"},
                     "panel_index": {"type": "INTEGER"},
+                    "crop_box": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "x": {"type": "NUMBER"},
+                            "y": {"type": "NUMBER"},
+                            "width": {"type": "NUMBER"},
+                            "height": {"type": "NUMBER"},
+                            "padding": {"type": "NUMBER"},
+                        },
+                        "required": ["x", "y", "width", "height"],
+                    },
+                    "reference_quality": {"type": "NUMBER"},
+                    "reference_quality_reason": {"type": "STRING"},
+                    "same_entity_key": {"type": "STRING"},
+                    "is_best_reference": {"type": "BOOLEAN"},
                 },
                 "required": [
                     "name",
@@ -61,6 +77,22 @@ GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
                     "visual_state": {"type": "STRING"},
                     "confidence": {"type": "NUMBER"},
                     "panel_index": {"type": "INTEGER"},
+                    "crop_box": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "x": {"type": "NUMBER"},
+                            "y": {"type": "NUMBER"},
+                            "width": {"type": "NUMBER"},
+                            "height": {"type": "NUMBER"},
+                            "padding": {"type": "NUMBER"},
+                        },
+                        "required": ["x", "y", "width", "height"],
+                    },
+                    "reference_quality": {"type": "NUMBER"},
+                    "reference_quality_reason": {"type": "STRING"},
+                    "same_location_key": {"type": "STRING"},
+                    "is_best_reference": {"type": "BOOLEAN"},
+                    "scene_scope": {"type": "STRING"},
                 },
                 "required": [
                     "name",
@@ -120,19 +152,46 @@ GEMINI_RESPONSE_SCHEMA: Dict[str, Any] = {
         },
         "continuity": {"type": "ARRAY", "items": {"type": "STRING"}},
         "uncertainties": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "state_changes": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "subject": {"type": "STRING"}, "attribute": {"type": "STRING"},
-            "value": {"type": "STRING"}, "certainty": {"type": "STRING"},
-            "panel_index": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}
-        }, "required": ["subject", "attribute", "value", "certainty", "panel_index", "confidence"]}},
-        "new_open_threads": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "description": {"type": "STRING"}, "thread_type": {"type": "STRING"},
-            "panel_index": {"type": "INTEGER"}, "confidence": {"type": "NUMBER"}
-        }, "required": ["description", "thread_type", "panel_index", "confidence"]}},
-        "resolved_threads": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "description": {"type": "STRING"}, "panel_index": {"type": "INTEGER"},
-            "confidence": {"type": "NUMBER"}
-        }, "required": ["description", "panel_index", "confidence"]}},
+        "state_changes": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "subject": {"type": "STRING"},
+                    "attribute": {"type": "STRING"},
+                    "value": {"type": "STRING"},
+                    "certainty": {"type": "STRING"},
+                    "panel_index": {"type": "INTEGER"},
+                    "confidence": {"type": "NUMBER"},
+                },
+                "required": ["subject", "attribute", "value", "certainty", "panel_index", "confidence"],
+            },
+        },
+        "new_open_threads": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "description": {"type": "STRING"},
+                    "thread_type": {"type": "STRING"},
+                    "panel_index": {"type": "INTEGER"},
+                    "confidence": {"type": "NUMBER"},
+                },
+                "required": ["description", "thread_type", "panel_index", "confidence"],
+            },
+        },
+        "resolved_threads": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "description": {"type": "STRING"},
+                    "panel_index": {"type": "INTEGER"},
+                    "confidence": {"type": "NUMBER"},
+                },
+                "required": ["description", "panel_index", "confidence"],
+            },
+        },
     },
     "required": [
         "summary",
@@ -161,6 +220,7 @@ def _validate_value(value: Any, schema: Dict[str, Any], path: str) -> None:
         "OBJECT": lambda item: isinstance(item, dict),
         "ARRAY": lambda item: isinstance(item, list),
         "STRING": lambda item: isinstance(item, str),
+        "BOOLEAN": lambda item: isinstance(item, bool),
         "INTEGER": lambda item: isinstance(item, int) and not isinstance(item, bool),
         "NUMBER": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
     }

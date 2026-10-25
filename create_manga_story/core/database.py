@@ -57,6 +57,23 @@ class ComicDatabase:
                     FOREIGN KEY (project_id, chapter_id)
                         REFERENCES chapters(project_id, chapter_id)
                 );
+                CREATE TABLE IF NOT EXISTS character_voice_profiles (
+                    project_id TEXT NOT NULL,
+                    character_id TEXT NOT NULL,
+                    voice_id TEXT NOT NULL,
+                    voice_instruction TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    sample_text TEXT NOT NULL,
+                    audio_path TEXT NOT NULL,
+                    sample_rate INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (project_id, character_id),
+                    UNIQUE (voice_id),
+                    FOREIGN KEY (project_id) REFERENCES projects(project_id),
+                    FOREIGN KEY (character_id) REFERENCES characters(character_id)
+                );
                 CREATE INDEX IF NOT EXISTS idx_pages_chapter_order
                     ON pages(project_id, chapter_id, page_index);
                 CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -420,20 +437,22 @@ class ComicDatabase:
         project_id: str,
         chapter_id: str,
         sha256: str,
+        prompt_version: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """查找已有相同hash的分析结果。返回最新的分析运行记录或None。"""
         with self.connect() as connection:
-            row = connection.execute(
-                """
+            query = """
                 SELECT ar.analysis_id, ar.result_json, ar.result_path
                 FROM analysis_runs ar
                 JOIN pages p ON ar.page_id = p.page_id
                 WHERE p.project_id = ? AND p.chapter_id = ? AND p.sha256 = ?
-                ORDER BY ar.created_at DESC
-                LIMIT 1
-                """,
-                (project_id, chapter_id, sha256),
-            ).fetchone()
+            """
+            params = [project_id, chapter_id, sha256]
+            if prompt_version:
+                query += " AND ar.prompt_version = ?"
+                params.append(prompt_version)
+            query += " ORDER BY ar.created_at DESC LIMIT 1"
+            row = connection.execute(query, params).fetchone()
             if row is None:
                 return None
             try:

@@ -55,55 +55,90 @@ class QwenImageEditCustomNode:
     CATEGORY = "QwenImageEdit"
 
     def edit_image(self, image1, prompt, unet_name, clip_name, vae_name, seed, steps, cfg, image2=None, image3=None):
-        import torch
-
-        nodes = get_core_nodes()
-
-        # 1. 加载模型
-        model = execute_node_safely(nodes["UNETLoader"], unet_name=unet_name, weight_dtype="default")[0]
-        clip = execute_node_safely(nodes["CLIPLoader"], clip_name=clip_name, type="qwen_image", device="default")[0]
-        vae = execute_node_safely(nodes["VAELoader"], vae_name=vae_name)[0]
-
-        # 2. 图像缩放处理
-        scaled_image = execute_node_safely(nodes["FluxKontextImageScale"], image=image1)[0]
-
-        # 3. 文本编码 (正向 & 负向)
-        cond_neg = execute_node_safely(
-            nodes["TextEncodeQwenImageEditPlus"],
-            clip=clip, vae=vae, prompt="", image1=scaled_image, image2=image2, image3=image3
-        )[0]
-        
-        cond_pos = execute_node_safely(
-            nodes["TextEncodeQwenImageEditPlus"],
-            clip=clip, vae=vae, prompt=prompt, image1=scaled_image, image2=image2, image3=image3
-        )[0]
-
-        # 4. 模型采样参数调整与参考方法包装
-        model_sampled = execute_node_safely(nodes["ModelSamplingAuraFlow"], model=model, shift=3.1)[0]
-        patched_model = execute_node_safely(nodes["CFGNorm"], model=model_sampled, strength=1.0, pre_cfg=False)[0]
-
-        cond_neg_ref = execute_node_safely(nodes["FluxKontextMultiReferenceLatentMethod"], conditioning=cond_neg, reference_latents_method="index_timestep_zero")[0]
-        cond_pos_ref = execute_node_safely(nodes["FluxKontextMultiReferenceLatentMethod"], conditioning=cond_pos, reference_latents_method="index_timestep_zero")[0]
-
-        # 5. VAE 编码
-        latent_image = execute_node_safely(nodes["VAEEncode"], vae=vae, pixels=scaled_image)[0]
-
-        # 6. KSampler 采样
-        sampled_latent = execute_node_safely(
-            nodes["KSampler"],
-            model=patched_model,
+        return (generate_qwen_image_edit(
+            image1=image1,
+            prompt=prompt,
+            unet_name=unet_name,
+            clip_name=clip_name,
+            vae_name=vae_name,
             seed=seed,
             steps=steps,
             cfg=cfg,
-            sampler_name="euler",
-            scheduler="simple",
-            positive=cond_pos_ref,
-            negative=cond_neg_ref,
-            latent_image=latent_image,
-            denoise=1.0
-        )[0]
+            image2=image2,
+            image3=image3,
+        ),)
 
-        # 7. VAE 解码输出图像
-        output_image = execute_node_safely(nodes["VAEDecode"], samples=sampled_latent, vae=vae)[0]
 
-        return (output_image,)
+def generate_qwen_image_edit(
+    image1,
+    prompt,
+    unet_name,
+    clip_name,
+    vae_name,
+    seed,
+    steps,
+    cfg,
+    image2=None,
+    image3=None,
+):
+    """Run Qwen Image Edit through the native ComfyUI node implementations.
+
+    This is the shared execution boundary for the regular node and automated
+    asset workflows. It deliberately returns only the decoded IMAGE so callers
+    can keep workflow-specific persistence and reporting outside the model
+    execution layer.
+    """
+    nodes = get_core_nodes()
+
+    # 1. 加载模型
+    model = execute_node_safely(nodes["UNETLoader"], unet_name=unet_name, weight_dtype="default")[0]
+    clip = execute_node_safely(nodes["CLIPLoader"], clip_name=clip_name, type="qwen_image", device="default")[0]
+    vae = execute_node_safely(nodes["VAELoader"], vae_name=vae_name)[0]
+
+    # 2. 图像缩放处理
+    scaled_image = execute_node_safely(nodes["FluxKontextImageScale"], image=image1)[0]
+
+    # 3. 文本编码 (正向 & 负向)
+    cond_neg = execute_node_safely(
+        nodes["TextEncodeQwenImageEditPlus"],
+        clip=clip, vae=vae, prompt="", image1=scaled_image, image2=image2, image3=image3
+    )[0]
+    cond_pos = execute_node_safely(
+        nodes["TextEncodeQwenImageEditPlus"],
+        clip=clip, vae=vae, prompt=prompt, image1=scaled_image, image2=image2, image3=image3
+    )[0]
+
+    # 4. 模型采样参数调整与参考方法包装
+    model_sampled = execute_node_safely(nodes["ModelSamplingAuraFlow"], model=model, shift=3.1)[0]
+    patched_model = execute_node_safely(nodes["CFGNorm"], model=model_sampled, strength=1.0, pre_cfg=False)[0]
+    cond_neg_ref = execute_node_safely(
+        nodes["FluxKontextMultiReferenceLatentMethod"],
+        conditioning=cond_neg, reference_latents_method="index_timestep_zero"
+    )[0]
+    cond_pos_ref = execute_node_safely(
+        nodes["FluxKontextMultiReferenceLatentMethod"],
+        conditioning=cond_pos, reference_latents_method="index_timestep_zero"
+    )[0]
+
+    # 5. VAE 编码
+    latent_image = execute_node_safely(nodes["VAEEncode"], vae=vae, pixels=scaled_image)[0]
+
+    # 6. KSampler 采样
+    sampled_latent = execute_node_safely(
+        nodes["KSampler"],
+        model=patched_model,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler_name="euler",
+        scheduler="simple",
+        positive=cond_pos_ref,
+        negative=cond_neg_ref,
+        latent_image=latent_image,
+        denoise=1.0
+    )[0]
+
+    # 7. VAE 解码输出图像
+    output_image = execute_node_safely(nodes["VAEDecode"], samples=sampled_latent, vae=vae)[0]
+
+    return output_image

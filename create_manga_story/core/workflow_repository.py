@@ -344,6 +344,79 @@ class ComicWorkflowRepository:
             )
         return iteration_id
 
+    def get_asset_workflow_request(
+        self, request_id: str, project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return one asset workflow request with all persisted iterations."""
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id is required.")
+        with self.database.connect() as connection:
+            clauses = ["request_id = ?"]
+            parameters: List[Any] = [request_id]
+            if project_id is not None:
+                clauses.append("project_id = ?")
+                parameters.append(project_id)
+            row = connection.execute(
+                "SELECT * FROM asset_workflow_requests WHERE " + " AND ".join(clauses),
+                parameters,
+            ).fetchone()
+            if row is None:
+                raise ValueError("Asset workflow request was not found.")
+            result = dict(row)
+            result["task"] = json.loads(result.pop("task_json"))
+            iterations = connection.execute(
+                """SELECT * FROM asset_workflow_iterations
+                   WHERE request_id = ? ORDER BY attempt_index""",
+                (request_id,),
+            ).fetchall()
+            result["iterations"] = []
+            for iteration in iterations:
+                item = dict(iteration)
+                item["prompt"] = json.loads(item.pop("prompt_json"))
+                item["reference_manifest"] = json.loads(
+                    item.pop("reference_manifest_json")
+                )
+                qc_json = item.pop("qc_report_json")
+                item["qc_report"] = json.loads(qc_json) if qc_json else None
+                result["iterations"].append(item)
+            return result
+
+    def list_asset_workflow_requests(
+        self,
+        project_id: str,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List workflow requests without loading large image payloads."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ValueError("project_id is required.")
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500.")
+        allowed = {
+            "requested", "references_ready", "prompt_ready", "generating",
+            "qc_pending", "pass_candidate", "retry_pending",
+            "needs_human_review", "error",
+        }
+        if statuses is not None and any(status not in allowed for status in statuses):
+            raise ValueError("Unsupported asset workflow status.")
+        with self.database.connect() as connection:
+            clauses = ["project_id = ?"]
+            parameters: List[Any] = [project_id]
+            if statuses is not None:
+                if not statuses:
+                    return []
+                clauses.append(
+                    "status IN ({})".format(",".join("?" for _ in statuses))
+                )
+                parameters.extend(statuses)
+            rows = connection.execute(
+                """SELECT request_id, project_id, status, created_at, updated_at
+                   FROM asset_workflow_requests WHERE {} ORDER BY updated_at DESC, request_id
+                   LIMIT ?""".format(" AND ".join(clauses)),
+                (*parameters, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def create_adaptation_plan(
         self,
         project_id: str,

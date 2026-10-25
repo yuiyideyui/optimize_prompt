@@ -15,6 +15,8 @@ from create_manga_story import NODE_CLASS_MAPPINGS
 from create_manga_story.core.asset_repository import AssetRepository
 from create_manga_story.core.database import ComicDatabase
 from create_manga_story.nodes.asset_nodes import (
+    ComicAssetAutoTargetBuilder,
+    ComicAssetAutoTargetBatchBuilder,
     ComicAssetLoader,
     ComicAssetRegistrar,
     ComicAssetRequestBuilder,
@@ -116,6 +118,34 @@ class AssetManagementTests(unittest.TestCase):
                     )
                 },
             )
+
+    def test_delete_asset_removes_database_records_and_file(self):
+        asset = self._register(run_id="delete-asset-run")["assets"][0]
+        path = self.repository.resolve_asset_path(asset)
+        self.assertTrue(path.is_file())
+        deleted = self.repository.delete_asset("project-1", asset["asset_id"])
+        self.assertTrue(deleted["deleted"])
+        self.assertTrue(deleted["file_deleted"])
+        self.assertFalse(path.exists())
+        with self.database.connect() as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM assets WHERE asset_id = ?", (asset["asset_id"],)
+            ).fetchone())
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM asset_generation_outputs WHERE asset_id = ?",
+                (asset["asset_id"],),
+            ).fetchone()[0], 0)
+
+    def test_delete_asset_rejects_path_escape_without_removing_asset(self):
+        asset = self._register(run_id="delete-asset-escape")["assets"][0]
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE assets SET relative_path = ? WHERE asset_id = ?",
+                ("../outside.png", asset["asset_id"]),
+            )
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            self.repository.delete_asset("project-1", asset["asset_id"])
+        self.assertIsNotNone(self.repository.get_asset(asset["asset_id"], "project-1"))
 
     def test_batch_registers_independent_assets_and_generation_outputs(self):
         images = [
@@ -437,6 +467,338 @@ class AssetManagementTests(unittest.TestCase):
         self.assertIn(identity_asset, request["reference_asset_ids"])
         self.assertTrue(any("multiple appearance variants" in item for item in request["warnings"]))
         self.assertEqual(len(request["source_evidence"]), 2)
+
+    def test_auto_target_builder_selects_confirmed_entity_and_approved_refs(self):
+        asset = self.repository.register_batch(
+            project_id="project-1",
+            asset_type="character_portrait",
+            images=[{"content": _png_bytes((20, 30, 40)), "width": 2, "height": 2}],
+            generation_run_id="auto-target-reference",
+            entity_type="character",
+            entity_id="character-1",
+        )["assets"][0]
+        self.repository.review_asset("project-1", asset["asset_id"], "approved")
+        resolution = {
+            "project_id": "project-1",
+            "characters": [{
+                "source_index": 0,
+                "source": {"name": "Ari"},
+                "entity_id": "character-1",
+                "status": "confirmed_match",
+                "confidence": 1.0,
+            }],
+            "locations": [],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            request, references_json, report_json = ComicAssetAutoTargetBuilder().build_auto_request(
+                "project-1", resolution, "character_pose", "automatic pose reference"
+            )
+        references = json.loads(references_json)
+        report = json.loads(report_json)
+        self.assertEqual(request["entity_id"], "character-1")
+        self.assertEqual(references[0]["asset_id"], asset["asset_id"])
+        self.assertEqual(report["selected_entity"]["entity_id"], "character-1")
+
+    def test_auto_target_builder_rejects_ambiguous_confirmed_entities(self):
+        resolution = {
+            "project_id": "project-1",
+            "characters": [
+                {"entity_id": "character-1", "status": "confirmed_match", "confidence": 1.0},
+                {"entity_id": "character-2", "status": "confirmed_match", "confidence": 1.0},
+            ],
+            "locations": [],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            with self.assertRaisesRegex(ValueError, "ambiguous"):
+                ComicAssetAutoTargetBuilder().build_auto_request(
+                    "project-1", resolution, "character_pose", "automatic pose reference"
+                )
+
+    def test_auto_target_builder_uses_unique_pending_match_when_confident(self):
+        asset = self.repository.register_batch(
+            project_id="project-1",
+            asset_type="character_portrait",
+            images=[{"content": _png_bytes((22, 33, 44)), "width": 2, "height": 2}],
+            generation_run_id="pending-target-reference",
+            entity_type="character",
+            entity_id="character-1",
+        )["assets"][0]
+        self.repository.review_asset("project-1", asset["asset_id"], "approved")
+        resolution = {
+            "project_id": "project-1",
+            "characters": [{
+                "source_index": 0,
+                "entity_id": "candidate-id",
+                "matched_entity_id": "character-1",
+                "status": "pending_review",
+                "confidence": 0.82,
+                "source": {"name": "Ari"},
+            }],
+            "locations": [],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            request, _, report_json = ComicAssetAutoTargetBuilder().build_auto_request(
+                "project-1", resolution, "character_pose", "automatic pose reference"
+            )
+        self.assertEqual(request["entity_id"], "character-1")
+        self.assertTrue(request["warnings"])
+        self.assertEqual(
+            json.loads(report_json)["selected_entity"]["selection_status"],
+            "unique_pending_match",
+        )
+
+    def test_auto_target_batch_builder_keeps_all_page_characters(self):
+        second = self.repository.register_batch(
+            project_id="project-1",
+            asset_type="character_portrait",
+            images=[{"content": _png_bytes((50, 60, 70)), "width": 2, "height": 2}],
+            generation_run_id="batch-target-reference",
+            entity_type="character",
+            entity_id="character-1",
+        )["assets"][0]
+        self.repository.review_asset("project-1", second["asset_id"], "approved")
+        resolution = {
+            "characters": [
+                {
+                    "source_index": 0,
+                    "entity_id": "character-1",
+                    "status": "new_candidate",
+                    "confidence": 0.1,
+                    "source": {"name": "Ari"},
+                },
+                {
+                    "source_index": 1,
+                    "entity_id": "character-1-missing-reference",
+                    "status": "new_candidate",
+                    "confidence": 0.0,
+                    "source": {"name": "Background person"},
+                },
+            ]
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_pose", "page pose"
+            )
+        requests = json.loads(requests_json)
+        report = json.loads(report_json)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            [item["asset_request"]["entity_id"] for item in requests],
+            ["character-1", "character-1-missing-reference"],
+        )
+        self.assertEqual(requests[0]["status"], "READY")
+        self.assertEqual(requests[1]["status"], "NEEDS_REFERENCE")
+        self.assertEqual(report["character_count"], 2)
+
+    def test_auto_target_batch_builder_allows_pages_without_characters(self):
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", {"characters": []}, "character_pose", "page pose"
+            )
+        self.assertEqual(json.loads(requests_json), [])
+        report = json.loads(report_json)
+        self.assertEqual(report["character_count"], 0)
+        self.assertEqual(report["source_character_count"], 0)
+
+    def test_auto_target_batch_builder_generates_scene_request_for_locations(self):
+        with self.database.connect() as connection:
+            connection.execute(
+                "INSERT INTO locations(location_id, project_id, canonical_name, stable_description) "
+                "VALUES ('location-1', 'project-1', 'Old station', 'rainy station')"
+            )
+        asset = self.repository.register_batch(
+            project_id="project-1",
+            asset_type="scene_reference",
+            images=[{"content": _png_bytes((80, 90, 100)), "width": 2, "height": 2}],
+            generation_run_id="location-target-reference",
+            entity_type="location",
+            entity_id="location-1",
+        )["assets"][0]
+        self.repository.review_asset("project-1", asset["asset_id"], "approved")
+        resolution = {
+            "characters": [],
+            "locations": [{
+                "source_index": 0,
+                "entity_id": "location-1",
+                "status": "new_candidate",
+                "confidence": 0.0,
+                "source": {"description": "Old station"},
+            }],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            requests_json, _ = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_portrait", "scene reference"
+            )
+        request = json.loads(requests_json)[0]
+        self.assertEqual(request["asset_request"]["entity_type"], "location")
+        self.assertEqual(request["asset_request"]["asset_type"], "scene_reference")
+        self.assertEqual(request["references"][0]["asset_id"], asset["asset_id"])
+
+    def test_auto_target_batch_builder_uses_page_as_first_reference(self):
+        resolution = {
+            "characters": [{
+                "source_index": 0,
+                "entity_id": "character-without-reference",
+                "status": "new_candidate",
+                "confidence": 0.0,
+                "source": {"name": "new person"},
+            }],
+            "locations": [],
+        }
+        pages = [{"page_id": "page-1", "sha256": "page-sha256"}]
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_portrait", "identity",
+                pages=pages, page_index=1,
+            )
+        request = json.loads(requests_json)[0]
+        report = json.loads(report_json)
+        self.assertEqual(request["status"], "READY_PAGE_SOURCE")
+        self.assertEqual(request["references"][0]["source_page_id"], "page-1")
+        self.assertEqual(request["asset_request"]["source_page_id"], "page-1")
+        self.assertEqual(request["asset_request"]["source_page_hash"], "page-sha256")
+        self.assertEqual(report["page_source_reference_count"], 1)
+
+    def test_auto_target_batch_builder_hashes_resolution_page_and_deduplicates_names(self):
+        resolution = {
+            "page_id": "page-1",
+            "characters": [
+                {"source_index": 0, "entity_id": "king-a", "source": {"name": "King"}},
+                {"source_index": 1, "entity_id": "king-b", "source": {"name": "King"}},
+            ],
+            "locations": [],
+        }
+        with patch(
+            "create_manga_story.nodes.asset_nodes._repository",
+            return_value=self.repository,
+        ):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_portrait", "character sheet"
+            )
+        requests = json.loads(requests_json)
+        report = json.loads(report_json)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["asset_request"]["source_page_hash"], "source-hash")
+        self.assertEqual(requests[0]["asset_request"]["source_page_id"], "page-1")
+        self.assertEqual(report["skipped_count"], 1)
+
+    def test_auto_target_batch_builder_creates_separate_raw_location_requests(self):
+        resolution = {
+            "locations": [
+                {"name": "Floating Islands World", "panel_index": 0, "crop_box": {"x": 0.1, "y": 0.1, "width": 0.4, "height": 0.4}},
+                {"name": "Royal Palace", "panel_index": 1, "crop_box": {"x": 0.2, "y": 0.6, "width": 0.6, "height": 0.3}},
+            ],
+            "characters": [],
+        }
+        pages = [{"page_id": "page-1", "sha256": "source-hash"}]
+        with patch("create_manga_story.nodes.asset_nodes._repository", return_value=self.repository):
+            requests_json, _ = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_portrait", "scene extraction",
+                pages=pages, page_index=1,
+            )
+        requests = json.loads(requests_json)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            [item["asset_request"]["asset_type"] for item in requests],
+            ["scene_reference", "scene_reference"],
+        )
+        self.assertNotEqual(
+            requests[0]["asset_request"]["identity_key"],
+            requests[1]["asset_request"]["identity_key"],
+        )
+
+    def test_auto_target_batch_builder_skips_incidental_location_details(self):
+        resolution = {
+            "locations": [
+                {"name": "Castle", "description": "A large castle landscape", "scene_scope": "macro", "panel_index": 0},
+                {"name": "Window corner", "description": "A tiny background window corner", "scene_scope": "detail", "panel_index": 1},
+            ],
+            "characters": [],
+        }
+        pages = [{"page_id": "page-1", "sha256": "source-hash"}]
+        with patch("create_manga_story.nodes.asset_nodes._repository", return_value=self.repository):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "scene_reference", "macro scene", pages=pages, page_index=1,
+            )
+        self.assertEqual(len(json.loads(requests_json)), 1)
+        self.assertEqual(json.loads(report_json)["skipped_incidental_location_count"], 1)
+
+    def test_auto_target_batch_builder_uses_best_same_location_reference(self):
+        resolution = {
+            "locations": [
+                {
+                    "name": "Royal Palace", "same_location_key": "palace",
+                    "reference_quality": 0.45, "panel_index": 0,
+                    "crop_box": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},
+                },
+                {
+                    "name": "Royal Palace", "same_location_key": "palace",
+                    "reference_quality": 0.95, "panel_index": 1,
+                    "crop_box": {"x": 0.1, "y": 0.1, "width": 0.8, "height": 0.7},
+                },
+            ],
+            "characters": [],
+        }
+        pages = [{"page_id": "page-1", "sha256": "source-hash"}]
+        with patch("create_manga_story.nodes.asset_nodes._repository", return_value=self.repository):
+            requests_json, report_json = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "scene_reference", "macro scene", pages=pages, page_index=1,
+            )
+        requests = json.loads(requests_json)
+        report = json.loads(report_json)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["asset_request"]["reference_quality"], 0.95)
+        self.assertEqual(sum(item["status"] == "DUPLICATE_OCCURRENCE" for item in report["items"]), 1)
+
+    def test_auto_target_batch_builder_keeps_multiple_raw_characters(self):
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE pages SET width = 1000, height = 1000 WHERE page_id = 'page-1'"
+            )
+        resolution = {
+            "page_id": "page-1",
+            "characters": [
+                {"name": "King", "panel_index": 4, "crop_box": {"x": 8, "y": 482, "width": 454, "height": 500}},
+                {"name": "Servant", "panel_index": 3, "crop_box": {"x": 846, "y": 418, "width": 100, "height": 133}},
+            ],
+            "locations": [],
+        }
+        with patch("create_manga_story.nodes.asset_nodes._repository", return_value=self.repository):
+            requests_json, _ = ComicAssetAutoTargetBatchBuilder().build_requests(
+                "project-1", resolution, "character_portrait", "character sheet"
+            )
+        requests = json.loads(requests_json)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            [item["asset_request"]["identity_key"].split(":")[0] for item in requests],
+            ["name", "name"],
+        )
+        self.assertNotEqual(
+            requests[0]["asset_request"]["entity_id"],
+            requests[1]["asset_request"]["entity_id"],
+        )
+        self.assertLess(requests[0]["references"][0]["crop_box"]["y"], 1.0)
 
     def test_registrar_validates_image_values_and_batch_shape(self):
         with self.assertRaisesRegex(ValueError, r"\[0, 1\]"):

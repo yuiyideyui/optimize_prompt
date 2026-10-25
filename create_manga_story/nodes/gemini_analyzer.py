@@ -64,10 +64,35 @@ class GeminiComicPageAnalyzer:
         db = ComicDatabase(root / "comic2anime.sqlite3")
         db.initialize()
 
+        # COMIC_PAGES is normally produced by ComicChapterLoader, which also
+        # persists the page.  ComfyUI can nevertheless reuse a cached loader
+        # output while the database was cleared or changed between runs.  In
+        # that case save_analysis would fail on analysis_runs.page_id's
+        # foreign key.  Reconcile the selected page before reading/writing
+        # analysis state so the node remains safe to rerun page by page.
+        with db.connect() as connection:
+            page_exists = connection.execute(
+                "SELECT 1 FROM pages WHERE page_id = ?", (page["page_id"],)
+            ).fetchone() is not None
+        if not page_exists:
+            db.save_pages([
+                {
+                    "page_id": page["page_id"],
+                    "project_id": page["project_id"],
+                    "chapter_id": page["chapter_id"],
+                    "page_index": int(page.get("page_index", page_index)),
+                    "source_path": page.get("source_path", page["image_path"]),
+                    "image_path": page["image_path"],
+                    "sha256": page.get("sha256", ""),
+                    "width": int(page.get("width", 0)),
+                    "height": int(page.get("height", 0)),
+                }
+            ])
+
         cached = None
         if page.get("sha256"):
             cached = db.find_analysis_by_sha256(
-                page["project_id"], page["chapter_id"], page["sha256"]
+                page["project_id"], page["chapter_id"], page["sha256"], PROMPT_VERSION
             )
         if cached is not None:
             cached["result"]["_cached"] = True
