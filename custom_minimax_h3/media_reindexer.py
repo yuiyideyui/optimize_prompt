@@ -11,6 +11,17 @@ MEDIA_TAG_RE = re.compile(
 )
 
 
+def _canonical_media_type(media_type: str) -> str:
+    """Normalize prompt tag names to the internal batch keys."""
+    value = str(media_type or "").casefold()
+    return {
+        "picture": "pictures",
+        "image": "pictures",
+        "audio": "audios",
+        "video": "videos",
+    }.get(value, value)
+
+
 def extract_used_media_indices(prompt: str) -> Dict[str, Set[int]]:
     """
     从 prompt 中提取所有使用的媒体标签序号。
@@ -29,12 +40,8 @@ def extract_used_media_indices(prompt: str) -> Dict[str, Set[int]]:
     }
 
     for match in MEDIA_TAG_RE.finditer(prompt):
-        media_type = match.group(1).lower()
+        media_type = _canonical_media_type(match.group(1))
         ordinal = int(match.group(2))
-
-        # 统一 "image" 为 "pictures"
-        if media_type == "image":
-            media_type = "pictures"
 
         if media_type in result:
             result[media_type].add(ordinal)
@@ -71,12 +78,8 @@ def reindex_prompt(prompt: str, reindex_mapping: Dict[str, Dict[int, int]]) -> s
     输出：prompt="<picture 1> with <picture 2> and <audio 1>"
     """
     def replace_tag(match):
-        media_type = match.group(1).lower()
+        media_type = _canonical_media_type(match.group(1))
         ordinal = int(match.group(2))
-
-        # 统一 "image" 为 "pictures"
-        if media_type == "image":
-            media_type = "pictures"
 
         # 获取重索引后的序号
         if media_type in reindex_mapping:
@@ -84,12 +87,21 @@ def reindex_prompt(prompt: str, reindex_mapping: Dict[str, Dict[int, int]]) -> s
             if new_ordinal is not None:
                 # 保持原始格式（<Type Ordinal> 或其他变体）
                 original = match.group(0)
+                display_type = {
+                    "pictures": "Picture",
+                    "audios": "Audio",
+                    "videos": "Video",
+                }.get(media_type, media_type.capitalize())
                 if original.startswith("<"):
-                    return f"<{media_type.capitalize()} {new_ordinal}>"
+                    return f"<{display_type} {new_ordinal}>"
                 else:
-                    return f"{media_type.capitalize()} {new_ordinal}"
+                    return f"{display_type} {new_ordinal}"
+            # The source batch was intentionally filtered. Remove a tag for a
+            # media item that is no longer available instead of leaving a
+            # dangling reference in the prompt.
+            return ""
 
-        # 如果没有映射，返回原始文本（表示此媒体被过滤掉）
+        # Unknown media types are left untouched.
         return match.group(0)
 
     return MEDIA_TAG_RE.sub(replace_tag, prompt)

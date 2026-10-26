@@ -234,6 +234,17 @@ def _validate_selected_audio_count(audio_values):
                          "the current prompt selects {}.".format(count))
 
 
+def _limit_selected_audio_indices(used_media, max_count=3):
+    """Keep only prompt-selected audio ordinals supported by H3."""
+    selected = sorted(used_media.get("audios", set()))
+    if len(selected) <= max_count:
+        return []
+    kept = selected[:max_count]
+    dropped = selected[max_count:]
+    used_media["audios"] = set(kept)
+    return dropped
+
+
 class MiniMaxH3SamplingSetup:
     @classmethod
     def INPUT_TYPES(cls):
@@ -434,6 +445,17 @@ class MiniMaxH3BatchRefToVideo:
                         if k.startswith("ref_audio_")
                     )
 
+            dropped_audio_ordinals = _limit_selected_audio_indices(used_media)
+            if dropped_audio_ordinals:
+                print(
+                    "WARNING: MiniMax H3 supports at most 3 standalone reference audios; "
+                    "the prompt selected {}. Dropping Audio {} after prompt selection.".format(
+                        len(used_media["audios"]) + len(dropped_audio_ordinals),
+                        ", ".join(str(index) for index in dropped_audio_ordinals),
+                    ),
+                    file=sys.stderr,
+                )
+
             # 步骤2：创建重索引映射
             reindex_mapping = create_reindex_mapping(used_media)
 
@@ -561,6 +583,17 @@ class MiniMaxH3BatchRefToVideo:
                     for k in raw_audio_values.keys()
                     if k.startswith("ref_audio_")
                 )
+
+        dropped_audio_ordinals = _limit_selected_audio_indices(used_media)
+        if dropped_audio_ordinals:
+            print(
+                "WARNING: MiniMax H3 supports at most 3 standalone reference audios; "
+                "the prompt selected {}. Dropping Audio {} after prompt selection.".format(
+                    len(used_media["audios"]) + len(dropped_audio_ordinals),
+                    ", ".join(str(index) for index in dropped_audio_ordinals),
+                ),
+                file=sys.stderr,
+            )
 
         # 步骤2：创建重索引映射
         reindex_mapping = create_reindex_mapping(used_media)

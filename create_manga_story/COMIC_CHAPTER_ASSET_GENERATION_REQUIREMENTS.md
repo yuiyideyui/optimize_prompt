@@ -130,6 +130,14 @@ The following records the complete functional scope of the current asset/workflo
 - The batch report must expose `page_image_count` and `page_image_asset_ids` so the current-page output can be verified.
 - The page batch report must distinguish `REUSED` page resources from generation decisions; this reader has no `PASS` generation path.
 
+### MiniMax H3 prompt media selection
+
+- Prompt media tags must be normalized before filtering: `<Picture N>`/`<Image N>` map to image references, `<Audio N>` maps to standalone reference audio, and `<Video N>` maps to reference video.
+- The node must filter the connected media batch from the prompt-selected ordinals before applying H3 limits. A page voice batch may contain more voices than one shot uses.
+- For the supplied prompt shape, `<Picture 1>`, `<Picture 5>` and `<Audio 1>` resolve to picture ordinals `{1, 5}` and audio ordinal `{1}`; the other connected audio entries must not be counted.
+- If a prompt selects more than three standalone audios, keep the first three selected ordinals, remove unsupported dangling audio tags from the rewritten prompt, reindex the remaining tags, and emit a warning rather than passing more than three audios to H3.
+- The ComfyUI process must be restarted after updating the custom node so the running MiniMax node loads the corrected media parser.
+
 ## Page-level asset bindings
 
 - A character or scene reference is generated once and then bound to every page occurrence that uses it.
