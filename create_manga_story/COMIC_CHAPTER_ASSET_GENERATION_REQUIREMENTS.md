@@ -2,6 +2,73 @@
 
 This file records the product requirements for chapter-level character and scene assets.
 
+## Implementation record for the current Git change
+
+The following records the complete functional scope of the current asset/workflow change, not only the page-binding fix.
+
+### Analysis and entity resolution
+
+- `AutoAnimeStoryboardPipeline.py` uses the current chapter/page analysis contract and does not invent story events beyond the supplied comic evidence.
+- `gemini_client.py` uses the full-page analysis prompt version `comic-page-analysis-v4-full-page-layout-crops`.
+- Gemini must inspect page orientation, panel boundaries, gutters, overlapping/splash panels, reading order, captions and speech bubbles before identifying characters or locations.
+- Character and location `crop_box` values are normalized to the entire uploaded page, remain inside the owning panel, exclude unrelated panels, and include the complete visible character whenever possible.
+- `entity_matching.py` preserves entities with evidence on the page being re-analyzed and prefers an existing exact canonical name/entity with current-page evidence. Re-analysis must therefore reuse SQLite identity instead of creating a new page candidate.
+- `asset_nodes.py` preserves source order while selecting the clearest duplicate occurrence, groups repeated identities before request creation, normalizes mixed pages to character/scene asset types, and records `panel_index`, source page hash and source crop evidence in each request.
+
+### Chapter asset generation
+
+- `nodes/chapter_asset_generation.py` implements chapter-wide grouping, Gemini classification, prompt creation, Qwen image generation, Gemini visual QC, optional SeedVR2 upscale, SQLite registration, approval and page binding.
+- Chapter grouping is completed before generation. Ordinary repeated characters and locations produce one shared master; only explicit persistent transformations/states may produce additional variants.
+- The node exposes `enable_upscale`; test runs may disable it, while the setting is included in the generation fingerprint and persisted parameters.
+- The node returns the generated image batch, a chapter asset manifest and an auditable report containing group count, approved count, output count, asset IDs and errors.
+- `chapter_asset_generation_workflow.json` and `chapter_asset_only_workflow.json` provide complete and asset-only execution paths.
+
+### SQLite persistence and deletion
+
+- `workflow_schema.py` creates `chapter_asset_groups`, `chapter_asset_group_sources` and `chapter_asset_page_bindings` with foreign keys, uniqueness constraints and lookup indexes.
+- `chapter_asset_groups` stores the durable chapter-level identity/variant and its approved `generated_asset_id`.
+- `chapter_asset_group_sources` stores every source crop, page, panel, quality, selected-source flag and evidence JSON used for classification.
+- `chapter_asset_page_bindings` stores the shared generated asset bound to each source page/entity occurrence.
+- `asset_repository.py` treats SQLite as the authoritative asset registry. Deleting an asset clears chapter-group master references, returns groups to `planned`, and removes source-crop links that would otherwise become stale.
+- Deleting a resource is therefore an explicit unbind. Re-running chapter generation may create a new approved asset and restore the required page bindings; ComfyUI cache is never used as the record.
+
+### MiniMax H3 page-resource path
+
+- `asset_workflow_nodes.py` was expanded for source-crop persistence, reference manifest validation, style-locked Qwen prompts, QC correction reporting, SQLite page binding and current-page batch reporting.
+- The current page path now only reads approved assets created by `Comic Chapter Asset Generation`; it does not call Gemini/Qwen/image generation, use the legacy generation cache, or accept a chapter-wide manifest as a substitute for a page request.
+- `chapter_asset_manifest` is intentionally not a page-resource input. The page path receives only current-page `requests_json` and resolves each request through its SQLite page binding.
+- Missing or ambiguous current-page bindings are hard errors. A chapter-level group match, another page's asset, a transient crop, or a name substring is not an acceptable fallback.
+- `batch_images` contains exactly one final approved asset per current-page request. Extra references are context only and never become additional page outputs.
+- `page_image_count`, `page_image_asset_ids`, per-request decisions and character voice handoff data are persisted in the batch report.
+
+### Image generation and model safeguards
+
+- `qwen_edit_2511.py` rejects empty prompts and prepends a source-authority/style-lock instruction so image1 remains the authoritative comic style and identity reference.
+- Character extraction mode explicitly preserves face, hair, body proportions, clothing, colors, accessories and source rendering across front/side/back views.
+- `qwen_image_21_client.py` and related image code preserve the intended reference-image role/order and normalize generated output dimensions where required.
+- `seedvr2_upscaler.py` explicitly releases temporary CUDA/CPU allocations after upscale, including garbage collection, CUDA synchronization/cache cleanup and Comfy soft cache cleanup.
+- `gemini_client.py` and QC paths now carry concrete correction instructions and corrected prompt fragments for retryable visual failures.
+
+### Voice and MiniMax integration
+
+- `voice_story_nodes.py` consumes the page asset batch report, repairs missing project-local character rows before FK-backed voice profile creation, and carries character identity, appearance, gender, age and emotion evidence forward.
+- Voice cache reuse checks persisted gender compatibility. Voice instructions include deterministic gender, age-band and identity constraints and prohibit an age/gender-inconsistent voice.
+- `custom_minimax_h3/minimax_h3_ref2va_images.py` validates only the audio references selected for the current prompt and enforces the maximum of three standalone reference audios.
+- `AutoAnimeStoryboardPipeline.py` and related voice/story handoffs use the updated asset and character metadata contract.
+
+### Resource manager and UI
+
+- `resource_manager.py` and `comic2anime-resource-manager.js` expose the resolved entity name in the `Comic2Anime 资源` panel while retaining generated asset name, type, status and asset ID for tracing.
+- The resource table therefore distinguishes the human-readable character/location from the physical generated asset and its SQLite identity.
+
+### Registration and verification
+
+- `__init__.py` registers the chapter generation, page batch, workflow, voice and resource nodes used by the new workflows.
+- `complete_asset_workflow_from_test2.json` is updated to the current asset/request contract.
+- `tests/test_chapter_asset_generation.py` covers chapter grouping, reuse, source matching, SQLite bindings, page-position selection, duplicate-reference prevention and no-generation page reads.
+- `tests/test_workflow.py` covers workflow persistence, QC/retry behavior, current-page resource reading, rejection of unbound requests and batch output behavior.
+- The current targeted asset/workflow test set contains 45 passing tests.
+
 ## Workflow responsibility split
 
 - `Comic Chapter Asset Generation` is the only workflow that creates chapter character and scene images with Gemini/Qwen/SeedVR2.
