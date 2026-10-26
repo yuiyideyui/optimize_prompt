@@ -18,6 +18,7 @@ from .nodes.asset_nodes import (
     ComicAssetRequestBuilder,
     ComicAssetReview,
 )
+from .nodes.chapter_asset_generation import ComicChapterAssetGeneration
 
 from .nodes.asset_workflow_nodes import (
     ComicAssetReferenceSelector,
@@ -72,6 +73,7 @@ NODE_CLASS_MAPPINGS = {
     "ComicAssetQuery": ComicAssetQuery,
     "ComicAssetLoader": ComicAssetLoader,
     "ComicAssetReview": ComicAssetReview,
+    "ComicChapterAssetGeneration": ComicChapterAssetGeneration,
 
     "ComicAssetReferenceSelector": ComicAssetReferenceSelector,
     "GeminiAssetPromptGenerator": GeminiAssetPromptGenerator,
@@ -118,6 +120,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ComicAssetQuery": "Comic Asset Query",
     "ComicAssetLoader": "Comic Asset Loader",
     "ComicAssetReview": "Comic Asset Review / Set Primary",
+    "ComicChapterAssetGeneration": "Comic Chapter Asset Generation",
 
     "ComicAssetReferenceSelector": "Comic Asset Reference Selector (Qwen IMAGE x3)",
     "GeminiAssetPromptGenerator": "Gemini Asset Prompt Generator",

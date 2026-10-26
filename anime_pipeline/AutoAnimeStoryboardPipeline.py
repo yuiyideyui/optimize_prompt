@@ -408,7 +408,7 @@ class AutoAnimeStoryboardPipeline:
         summary_prompt = (
             "请根据以下新生成的动画分镜剧本，写一段精炼的剧情摘要（约100-200字），"
             "总结这段剧情里发生了什么核心事件、人物情感有什么变化、场景有无转换。\n\n"
-            "只能总结文本中明确发生或明确展示的内容，禁止补充后续剧情、推断结果、添加反转或预测下一页。\n\n"
+            "只能总结文本中明确发生或明确展示的内容，禁止推断后面的剧情，禁止补充后续剧情、推断结果、添加反转或预测下一页。\n\n"
             f"{new_refined_text}"
         )
         current_batch_summary = self._call_model(

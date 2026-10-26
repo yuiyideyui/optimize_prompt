@@ -13,6 +13,7 @@ from .storage import get_data_root, safe_component
 
 
 ASSET_TYPES = (
+    "character_source_crop",
     "character_identity",
     "character_turnaround",
     "character_portrait",
@@ -1020,6 +1021,21 @@ class AssetRepository:
                         raise ValueError("Asset path is not a regular file.")
                     path.replace(backup)
                     moved = True
+                # Deleting from the resource manager is an explicit unbind:
+                # clear chapter master references before removing the asset.
+                # Source crops are also detached so SQLite foreign keys do not
+                # leave a stale chapter-source binding behind.
+                connection.execute(
+                    """UPDATE chapter_asset_groups
+                       SET generated_asset_id = NULL, status = 'planned',
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE project_id = ? AND generated_asset_id = ?""",
+                    (project_id, asset_id),
+                )
+                connection.execute(
+                    "DELETE FROM chapter_asset_group_sources WHERE source_crop_asset_id = ?",
+                    (asset_id,),
+                )
                 connection.execute("DELETE FROM asset_reviews WHERE asset_id = ?", (asset_id,))
                 connection.execute("DELETE FROM asset_relations WHERE project_id = ? AND asset_id = ?", (project_id, asset_id))
                 connection.execute("DELETE FROM asset_generation_outputs WHERE asset_id = ?", (asset_id,))

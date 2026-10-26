@@ -18,6 +18,57 @@ REFERENCE_TEXT = (
 _MODEL_CACHE: Dict[str, Any] = {}
 
 
+def _ensure_report_character_entities(
+    database: ComicDatabase, project_id: str, report: Dict[str, Any], entries: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Materialize character IDs emitted by the page asset batch.
+
+    Asset reports can outlive a resolver/database refresh.  The voice node is
+    the handoff boundary, so it repairs missing project-local character rows
+    from the report evidence before creating the FK-backed voice profile.
+    """
+    if not isinstance(report, dict):
+        return entries
+    evidence_by_id = {}
+    for result in report.get("results", []):
+        if not isinstance(result, dict) or result.get("decision") not in ("PASS", "REUSED"):
+            continue
+        request = result.get("asset_request") if isinstance(result.get("asset_request"), dict) else {}
+        if (result.get("entity_type") or request.get("entity_type")) != "character":
+            continue
+        character_id = result.get("entity_id") or request.get("entity_id")
+        if character_id:
+            evidence = request.get("source_evidence")
+            evidence_by_id[str(character_id)] = (
+                evidence[0] if isinstance(evidence, list) and evidence and isinstance(evidence[0], dict) else {}
+            )
+    with database.connect() as connection:
+        project = connection.execute(
+            "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        if project is None:
+            return entries
+        for entry in entries:
+            character_id = str(entry.get("matched_entity_id") or entry.get("entity_id") or "").strip()
+            if not character_id:
+                continue
+            exists = connection.execute(
+                "SELECT 1 FROM characters WHERE project_id = ? AND character_id = ?",
+                (project_id, character_id),
+            ).fetchone()
+            if exists:
+                continue
+            evidence = evidence_by_id.get(character_id, {})
+            source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+            name = evidence.get("name") or source.get("name") or character_id
+            description = evidence.get("appearance") or evidence.get("description") or ""
+            connection.execute(
+                "INSERT INTO characters(character_id, project_id, canonical_name, stable_description, status) VALUES (?, ?, ?, ?, ?)",
+                (character_id, project_id, str(name).strip(), str(description).strip(), "candidate"),
+            )
+    return entries
+
+
 def _voice_gender_hint(entry: Dict[str, Any], profile: Dict[str, Any]) -> str:
     """Return an explicit gender hint when the page/entity data contains one."""
     values = []
@@ -32,6 +83,41 @@ def _voice_gender_hint(entry: Dict[str, Any], profile: Dict[str, Any]) -> str:
     if any(token in text for token in ("male", "man", "boy", "男", "男性", "男生", "男人")):
         return "男性声线"
     return "性别未知；根据角色外观、年龄和身份资料选择自然匹配的声线，不要擅自改变角色性别。"
+
+
+def _voice_age_hint(entry: Dict[str, Any], profile: Dict[str, Any]) -> str:
+    """Return a deterministic age-band constraint for the TTS instruction."""
+    values = []
+    for container in (entry, profile, entry.get("source") if isinstance(entry.get("source"), dict) else {}):
+        for key in ("age", "age_group", "age_band", "appearance", "identity_candidate"):
+            value = container.get(key)
+            if value:
+                values.append(str(value).strip().lower())
+    text = " ".join(values)
+    if any(token in text for token in ("infant", "baby", "toddler", "幼儿", "婴儿")):
+        return "婴幼儿声线"
+    if any(token in text for token in ("child", "kid", " 어린", "儿童", "小孩", "小女孩", "小男孩")):
+        return "儿童声线"
+    if any(token in text for token in ("teen", "teenager", "adolescent", "少年", "少女", " adolescente")):
+        return "少年或少女声线"
+    if any(token in text for token in ("elderly", "old man", "old woman", "senior", "老人", "老年", "老者", "年迈")):
+        return "老年声线"
+    if any(token in text for token in ("middle-aged", "middle aged", "中年")):
+        return "中年声线"
+    if any(token in text for token in ("adult", "成年", "成年人", "青年", "young man", "young woman")):
+        return "成年声线"
+    return "年龄未明确；不得擅自使用儿童或老人声线，使用与角色外观和身份最接近的成年中性声线。"
+
+
+def _voice_cache_matches_gender(existing_instruction: str, requested_gender: str) -> bool:
+    """Avoid reusing a cached voice whose persisted gender conflicts."""
+    gender = str(requested_gender or "").strip().lower()
+    instruction = str(existing_instruction or "").lower()
+    if gender in ("male", "man", "boy", "男", "男性", "男生", "男人"):
+        return "男性声线" in instruction or "male" in instruction or "男声" in instruction
+    if gender in ("female", "woman", "girl", "女", "女性", "女生", "女人"):
+        return "女性声线" in instruction or "female" in instruction or "女声" in instruction
+    return True
 
 
 def _resolve_page_character_id(database: ComicDatabase, project_id: str, entry: Dict[str, Any]) -> str:
@@ -223,7 +309,11 @@ class ComicCharacterVoiceReference:
                 "SELECT * FROM character_voice_profiles WHERE project_id = ? AND character_id = ?",
                 (project_id, character_id),
             ).fetchone()
-        if existing is not None and not force_regenerate:
+        profile = _json_object(character_profile_json, "character_profile_json")
+        requested_gender = profile.get("gender") or ""
+        if existing is not None and not force_regenerate and _voice_cache_matches_gender(
+            existing["voice_instruction"], requested_gender
+        ):
             path = Path(existing["audio_path"])
             if path.is_file():
                 import soundfile as sf
@@ -238,7 +328,6 @@ class ComicCharacterVoiceReference:
                 }
                 return ({"waveform": waveform, "sample_rate": int(sample_rate)}, existing["voice_id"], json.dumps(manifest, ensure_ascii=False))
 
-        profile = _json_object(character_profile_json, "character_profile_json")
         profile_text = json.dumps(profile, ensure_ascii=False)
         instruction = "{}\n角色资料：{}".format(voice_instruction.strip(), profile_text)
         target_device = "cuda:0" if device == "auto" else device
@@ -333,7 +422,6 @@ class ComicPageVoiceReferences:
             "required": {
                 "project_id": ("STRING", {"default": "project-1"}),
                 "entity_resolution": ("COMIC_ENTITY_RESOLUTION",),
-                "voice_instruction": ("STRING", {"multiline": True, "default": "自然、清晰、稳定的动漫角色参考音色。"}),
                 "reference_text": ("STRING", {"multiline": True, "default": REFERENCE_TEXT}),
                 "language": (["Chinese", "English", "Japanese", "Korean"], {"default": "Chinese"}),
                 "model_path": ("STRING", {"default": r"D:\ComfyUI_windows_portable\ComfyUI\custom_nodes\my_comfyui\voiceCreate\models\Qwen3-TTS-12Hz-1.7B-VoiceDesign"}),
@@ -423,6 +511,12 @@ class ComicPageVoiceReferences:
                         "source": {
                             "name": item.get("character_name", ""),
                             "identity_candidate": item.get("character_name", ""),
+                            "appearance": item.get("appearance", ""),
+                            "clothing": item.get("clothing", ""),
+                            "emotion": item.get("emotion", ""),
+                            "gender": item.get("gender", ""),
+                            "age": item.get("age", ""),
+                            "voice_instruction": item.get("voice_instruction", ""),
                         },
                     })
             if report_entries:
@@ -471,13 +565,20 @@ class ComicPageVoiceReferences:
                 "clothing": source.get("clothing", ""),
                 "emotion": source.get("emotion", ""),
                 "gender": source.get("gender") or entry.get("gender", ""),
+                "age": source.get("age") or entry.get("age", ""),
+                "identity": source.get("identity_candidate") or entry.get("identity_candidate") or source.get("name", ""),
             }
             gender_hint = _voice_gender_hint(entry, profile)
+            age_hint = _voice_age_hint(entry, profile)
             profile["voice_gender_hint"] = gender_hint
+            profile["voice_age_hint"] = age_hint
+            character_voice_instruction = source.get("voice_instruction") or "自然、清晰、稳定的动漫角色参考音色。"
             effective_instruction = (
-                voice_instruction.strip()
-                + "\n必须使用与当前角色匹配的" + gender_hint
-                + "；同一 character_id 后续始终复用同一音色。"
+                character_voice_instruction.strip()
+                + "\n硬性声音约束：性别必须是" + gender_hint
+                + "；年龄必须是" + age_hint
+                + "；角色身份为" + str(profile.get("identity") or "未知身份")
+                + "。禁止使用与角色性别、年龄不符的声线；同一 character_id 后续始终复用同一音色。"
             )
             try:
                 audio, voice_id, manifest_json = node.generate(
@@ -591,7 +692,6 @@ class ComicAssetVoiceGenerationAndExport:
             "required": {
                 "project_id": ("STRING", {"default": "project-1"}),
                 "asset_generation_report": ("STRING", {"multiline": True, "default": "{}"}),
-                "voice_instruction": ("STRING", {"multiline": True, "default": "自然、清晰、稳定的动漫角色参考音色。"}),
                 "reference_text": ("STRING", {"multiline": True, "default": REFERENCE_TEXT}),
                 "language": (["Chinese", "English", "Japanese", "Korean"], {"default": "Chinese"}),
                 "model_path": ("STRING", {"default": r"D:\ComfyUI_windows_portable\ComfyUI\custom_nodes\my_comfyui\voiceCreate\models\Qwen3-TTS-12Hz-1.7B-VoiceDesign"}),
@@ -599,8 +699,6 @@ class ComicAssetVoiceGenerationAndExport:
                 "filename_prefix": ("STRING", {"default": "page_character_reference"}),
             },
             "optional": {
-                "entity_resolution": ("COMIC_ENTITY_RESOLUTION",),
-                "generated_character_images": ("IMAGE",),
                 "device": (["auto", "cuda:0", "cpu"], {"default": "auto"}),
                 "force_regenerate": ("BOOLEAN", {"default": False}),
             },
@@ -612,9 +710,9 @@ class ComicAssetVoiceGenerationAndExport:
     CATEGORY = "Comic2Anime/Assets/Voice"
 
     def generate_and_export(
-        self, project_id, asset_generation_report, voice_instruction, reference_text, language,
+        self, project_id, asset_generation_report, reference_text, language,
         model_path, output_directory, filename_prefix, device="auto",
-        force_regenerate=False, entity_resolution=None, generated_character_images=None,
+        force_regenerate=False,
     ):
         try:
             parsed_report = json.loads(asset_generation_report or "{}")
@@ -641,22 +739,43 @@ class ComicAssetVoiceGenerationAndExport:
                         report_characters.append({
                             "character_id": str(character_id),
                             "character_name": evidence.get("name") or evidence.get("identity_candidate", ""),
+                            "identity_candidate": evidence.get("identity_candidate", ""),
+                            "gender": evidence.get("gender", "unknown"),
+                            "age": evidence.get("age", ""),
+                            "appearance": evidence.get("appearance", ""),
+                            "clothing": evidence.get("clothing", ""),
+                            "emotion": evidence.get("emotion", ""),
+                            "voice_instruction": evidence.get("voice_instruction", ""),
                         })
         entity_resolution = {
             "characters": [
                 {
                     "entity_id": str(item.get("character_id") or item.get("entity_id")),
                     "matched_entity_id": str(item.get("character_id") or item.get("entity_id")),
-                    "source": {"name": item.get("character_name", "")},
+                    "source": {
+                        "name": item.get("character_name", ""),
+                        "identity_candidate": item.get("identity_candidate", ""),
+                        "appearance": item.get("appearance", ""),
+                        "clothing": item.get("clothing", ""),
+                        "emotion": item.get("emotion", ""),
+                        "gender": item.get("gender", "unknown"),
+                        "age": item.get("age", ""),
+                        "voice_instruction": item.get("voice_instruction", ""),
+                    },
                 }
                 for item in report_characters
                 if isinstance(item, dict) and (item.get("character_id") or item.get("entity_id"))
             ]
         }
+        database = ComicDatabase(get_data_root() / "comic2anime.sqlite3")
+        database.initialize()
+        entity_resolution["characters"] = _ensure_report_character_entities(
+            database, project_id, parsed_report, entity_resolution["characters"]
+        )
         audio, manifest_json, report_json = ComicPageVoiceReferences().generate_page_voices(
-            project_id, entity_resolution, voice_instruction, reference_text,
+            project_id, entity_resolution, "自然、清晰、稳定的动漫角色参考音色。", reference_text,
             language, model_path, device, force_regenerate,
-            asset_generation_report, generated_character_images,
+            asset_generation_report, None,
         )
         if audio is None:
             return None, manifest_json, "[]", report_json

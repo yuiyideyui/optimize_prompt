@@ -1,0 +1,293 @@
+{
+  "id": "chapter-asset-only-workflow",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "ComicChapterLoader",
+      "pos": [
+        80,
+        180
+      ],
+      "size": [
+        330,
+        282
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pages",
+          "type": "COMIC_PAGES",
+          "slot_index": 0,
+          "links": []
+        },
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "chapter_id",
+          "type": "STRING",
+          "slot_index": 2,
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "import_report",
+          "type": "STRING",
+          "slot_index": 3,
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ComicChapterLoader"
+      },
+      "widgets_values": [
+        "project-1",
+        "chapter-1",
+        "natural_filename",
+        "skip",
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "ComicChapterAssetGeneration",
+      "pos": [
+        540,
+        120
+      ],
+      "size": [
+        420,
+        620
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "STRING",
+          "widget": {
+            "name": "project_id"
+          },
+          "link": 1
+        },
+        {
+          "name": "chapter_id",
+          "type": "STRING",
+          "widget": {
+            "name": "chapter_id"
+          },
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "generated_assets",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "chapter_asset_manifest",
+          "type": "STRING",
+          "slot_index": 1,
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "slot_index": 2,
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ComicChapterAssetGeneration"
+      },
+      "widgets_values": [
+        "project-1",
+        "chapter-1",
+        "qwen_image_2.1_int8_convrot.safetensors",
+        "qwen3vl_8b_int8_convrot.safetensors",
+        "qwen_image_2.1_vae_bf16.safetensors",
+        0,
+        25,
+        1.0,
+        2,
+        "",
+        "gemini-2.5-flash",
+        "https://generativelanguage.googleapis.com",
+        600,
+        3,
+        false
+      ]
+    },
+    {
+      "id": 3,
+      "type": "SaveImage",
+      "pos": [
+        1050,
+        130
+      ],
+      "size": [
+        300,
+        270
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "chapter_assets"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "ShowText|pysssss",
+      "pos": [
+        1050,
+        450
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ShowText|pysssss"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "ShowText|pysssss",
+      "pos": [
+        1050,
+        710
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ShowText|pysssss"
+      },
+      "widgets_values": [
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      1,
+      2,
+      0,
+      "STRING"
+    ],
+    [
+      2,
+      1,
+      2,
+      2,
+      1,
+      "STRING"
+    ],
+    [
+      3,
+      2,
+      0,
+      3,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      2,
+      1,
+      4,
+      0,
+      "STRING"
+    ],
+    [
+      5,
+      2,
+      2,
+      5,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "asset_generation_notes": [
+      "本工作流只使用 ComicChapterAssetGeneration，不再使用旧的自动图片批处理节点。",
+      "章节节点会自动扫描 project_id + chapter_id 下的全部页面分析。",
+      "生成后的角色/场景 approved 主资产会绑定到章节分组、来源页和变体。",
+      "执行前请填写实际的 Qwen 模型文件和 Gemini API Key。"
+    ]
+  },
+  "version": 0.4
+}

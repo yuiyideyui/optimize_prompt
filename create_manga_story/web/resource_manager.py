@@ -36,7 +36,13 @@ def register_resource_routes():
             )]
             assets = [dict(row) for row in connection.execute(
                 "SELECT a.*, r.entity_type, r.entity_id, r.relation_type "
-                "FROM assets a LEFT JOIN asset_relations r ON r.asset_id=a.asset_id "
+                ", CASE WHEN r.entity_type = 'character' THEN c.canonical_name "
+                "       WHEN r.entity_type = 'location' THEN l.canonical_name "
+                "       ELSE '' END AS entity_name "
+                "FROM assets a "
+                "LEFT JOIN asset_relations r ON r.asset_id=a.asset_id "
+                "LEFT JOIN characters c ON c.project_id = a.project_id AND c.character_id = r.entity_id AND r.entity_type = 'character' "
+                "LEFT JOIN locations l ON l.project_id = a.project_id AND l.location_id = r.entity_id AND r.entity_type = 'location' "
                 "WHERE a.project_id = ? ORDER BY a.created_at DESC",
                 (project_id,),
             )]

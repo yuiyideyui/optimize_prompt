@@ -88,6 +88,26 @@ def generate_qwen_image_edit(
     can keep workflow-specific persistence and reporting outside the model
     execution layer.
     """
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Qwen Image Edit prompt cannot be empty.")
+    prompt = (
+        "PRIMARY STYLE AND IDENTITY RULE: image1 is the authoritative comic reference. "
+        "Preserve the exact original manga/anime visual style from image1: line art, "
+        "ink weight, coloring method, cel shading or painterly shading, palette, "
+        "facial rendering, proportions, texture, lighting, and detail level. "
+        "Do not convert the character into photorealistic, 3D, western comic, generic "
+        "anime, or another illustration style. Do not redesign, beautify, age, or "
+        "change the character identity. Supplementary images may clarify missing details "
+        "but must never override image1. Only perform the requested extraction, cleanup, "
+        "completion, or resolution improvement.\n\n" + prompt
+    )
+    if "CHARACTER EXTRACTION MODE" in prompt:
+        prompt += (
+            "\n\nCHARACTER STYLE LOCK: Every front, side, and back view must depict the same "
+            "character in the exact source comic style. Preserve the source face, hair, "
+            "body proportions, clothing shapes, colors, accessories, and cel/painterly "
+            "rendering. Improve clarity only; do not reinterpret the design."
+        )
     nodes = get_core_nodes()
 
     # 1. 加载模型

@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from ..core.schemas import GEMINI_RESPONSE_SCHEMA, validate_analysis
 
 
-PROMPT_VERSION = "comic-page-analysis-v3-macro-scenes"
+PROMPT_VERSION = "comic-page-analysis-v4-full-page-layout-crops"
 
 
 def _filter_macro_locations(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,13 +164,26 @@ def analyze_image(
     except Exception:
         source_width = source_height = 0
     prompt = (
+        "Analyze this comic page as a complete page before identifying any entity. "
+        "First inspect the entire image at page level: determine the page orientation, "
+        "reading order, number and boundaries of every comic panel, gutters, overlapping "
+        "panels, splash-page regions, captions, speech bubbles, and which visual content "
+        "belongs to each panel. Only after this full-page layout pass, locate each character "
+        "and macro location inside its owning panel and calculate its page-level crop_box. "
+        "Never guess a crop from a character description alone and never use coordinates from "
+        "a different panel. "
         "Analyze this comic page. Follow the page's visible reading order. "
         "Do not invent names or facts. Use empty strings for unknown text, "
         "and put uncertain interpretations in uncertainties. For every visible "
         "For each character, also return gender as male, female, or unknown only when "
         "the visual/story evidence supports it; never guess from a name alone. For each "
-        "character and location, return a normalized crop_box with x, y, width, "
-        "height in the 0..1 range, excluding unrelated panels and speech bubbles; "
+        "For every character and location, return a normalized page-coordinate crop_box with "
+        "x, y, width, height in the 0..1 range. Coordinates are relative to the entire uploaded "
+        "page, not to a panel or a resized preview. The crop must stay inside the owning panel, "
+        "exclude unrelated panels and speech bubbles, and include the complete visible character "
+        "body whenever possible (head, torso, hands and feet) or the complete usable macro scene. "
+        "For a character, do not crop only the face unless the face is genuinely the only visible "
+        "part. Add padding only after the target bounds are determined and keep padding small. "
         "include a small padding value when useful. If the same character or location "
         "appears more than once on this page, return every occurrence but assign a stable "
         "same_entity_key or same_location_key and compare the visible reference quality. "

@@ -53,7 +53,7 @@ def _existing_entities(
         entities = [
             dict(row)
             for row in connection.execute(
-                "SELECT {} AS entity_id, canonical_name, stable_description "
+                "SELECT {} AS entity_id, canonical_name, stable_description, status, created_at "
                 "FROM {} WHERE project_id = ? AND status != 'rejected'".format(
                     id_column, table
                 ),
@@ -85,11 +85,17 @@ def _existing_entities(
                        WHERE location_id = ?""",
                     (entity["entity_id"],),
                 ).fetchall()
+            # Keep entities whose only evidence is on the page being
+            # re-analysed. Excluding them makes every repeat analysis create
+            # a fresh candidate ID for the same named character/location,
+            # defeating SQLite asset bindings and regenerating assets.
+            # The resolver still applies the normal scoring rules below.
             independent_evidence = [
                 row for row in all_evidence if row["page_id"] != exclude_page_id
             ]
-            if all_evidence and not independent_evidence:
-                continue
+            entity["has_current_page_evidence"] = any(
+                row["page_id"] == exclude_page_id for row in all_evidence
+            )
             entity["stable_description"] = (
                 "" if all_evidence else entity.get("stable_description", "")
             )
@@ -154,6 +160,32 @@ def _resolve_one(
         if name_match or score >= review_threshold:
             scored.append((score, candidate, bool(name_match)))
     scored.sort(key=lambda entry: (-entry[0], entry[1]["entity_id"]))
+
+    # Exact canonical names are the strongest durable identity available in
+    # the knowledge base for repeated analysis. Prefer an existing exact-name
+    # entity instead of creating a new page/index-based candidate.
+    exact_name = [
+        entry for entry in candidates
+        if normalized_name
+        and normalized_name == normalize_text(entry.get("canonical_name", ""))
+        and entry.get("has_current_page_evidence")
+    ]
+    if exact_name:
+        exact_name.sort(key=lambda candidate: (
+            0 if candidate.get("status") == "confirmed" else 1,
+            candidate.get("created_at", ""),
+            candidate["entity_id"],
+        ))
+        best = exact_name[0]
+        return {
+            "source_index": index,
+            "source": item,
+            "entity_id": best["entity_id"],
+            "matched_entity_id": best["entity_id"],
+            "status": "confirmed_match",
+            "confidence": 1.0,
+            "evidence": "Exact canonical name matched an existing SQLite entity.",
+        }
 
     proposed_id = _candidate_id(project_id, page_id, entity_type, index)
     if not scored:

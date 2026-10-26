@@ -13,7 +13,7 @@ async function openManager() {
     <span id="summary" style="margin-left:auto"></span><button id="close">关闭</button></div>
     <div id="error" style="color:#ff8888;margin:10px 0"></div>
     <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr>
-    <th>预览</th><th>章节 / 页面</th><th>资产</th><th>类型</th><th>状态</th><th>实体</th><th>创建时间</th><th></th>
+    <th>预览</th><th>章节 / 页面</th><th>名称</th><th>资产</th><th>类型</th><th>状态</th><th>实体</th><th>创建时间</th><th></th>
     </tr></thead><tbody id="assets"></tbody></table></div>`;
   document.body.appendChild(root);
   root.querySelector("#close").onclick = () => root.remove();
@@ -43,10 +43,11 @@ async function openManager() {
     root.querySelector("#assets").innerHTML = assets.map((asset) => {
       const sourcePage = asset.metadata?.source_page_id || asset.metadata?.page_id;
       const pageLabel = pageLabels.get(sourcePage) || (sourcePage ? "其他页面" : "未关联页面");
+      const name = asset.entity_name || asset.display_name || asset.asset_id;
       return `<tr style="border-top:1px solid #393c3f"><td><img loading="lazy" src="/comic2anime/resources/${encodeURIComponent(data.project_id)}/${encodeURIComponent(asset.asset_id)}/image" style="width:112px;height:80px;object-fit:contain;background:#292b2d"></td>
-      <td>${esc(pageLabel)}</td><td>${esc(asset.display_name || asset.asset_id)}<br><small>${esc(asset.asset_id)}</small></td><td>${esc(asset.asset_type)}</td><td>${esc(asset.status)}</td>
+      <td>${esc(pageLabel)}</td><td>${esc(name)}</td><td>${esc(asset.display_name || asset.asset_id)}<br><small>${esc(asset.asset_id)}</small></td><td>${esc(asset.asset_type)}</td><td>${esc(asset.status)}</td>
       <td>${esc(asset.entity_type)}:${esc(asset.entity_id)}</td><td>${esc(asset.created_at)}</td><td><button data-delete="${esc(asset.asset_id)}">删除</button></td></tr>`;
-    }).join("") || '<tr><td colspan="8" style="padding:20px">没有匹配的资产</td></tr>';
+    }).join("") || '<tr><td colspan="9" style="padding:20px">没有匹配的资产</td></tr>';
     root.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
       if (!window.confirm("删除此生成资产及对应文件？漫画原页和分析数据会保留。")) return;
       const response = await fetch(`/comic2anime/resources/${encodeURIComponent(data.project_id)}/${encodeURIComponent(button.dataset.delete)}`, { method: "DELETE" });

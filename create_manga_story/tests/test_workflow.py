@@ -371,7 +371,7 @@ class ComicWorkflowTests(unittest.TestCase):
         self.assertEqual(manifest[0]["version_hash"], hashlib.sha256(encoded).hexdigest())
         self.assertEqual(json.loads(manifest_json)[0]["asset_id"], asset_id)
 
-    def test_gemini_prompt_qc_and_registration_keep_candidate_state(self):
+    def test_gemini_prompt_qc_and_registration_auto_approve_pass(self):
         prompt = {
             "prompt_version": 1,
             "detailed_description": "Keep the established face; change only the coat.",
@@ -455,7 +455,7 @@ class ComicWorkflowTests(unittest.TestCase):
                 -1,
                 "{}",
             )
-        self.assertEqual(assets[0]["status"], "candidate")
+        self.assertEqual(assets[0]["status"], "approved")
         self.assertEqual(registration["qc_decision"], "PASS")
         with self.database.connect() as connection:
             iteration = connection.execute(
@@ -590,7 +590,7 @@ class ComicWorkflowTests(unittest.TestCase):
         self.assertTrue(api_calls[3][1][0][0].startswith(b"\x89PNG"))
         self.assertEqual(
             [entry["asset_status"] for entry in report["attempts"]],
-            [None, "candidate"],
+            [None, "approved"],
         )
         with self.database.connect() as connection:
             iteration_statuses = [
@@ -811,20 +811,15 @@ class ComicWorkflowTests(unittest.TestCase):
             "generate",
             side_effect=reports,
         ):
-            latest, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
-                json.dumps([
-                    {"asset_request": first, "references": []},
-                    {"asset_request": second, "references": []},
-                ]),
-                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
-                "", "gemini-test", "https://example.invalid", 10, 0,
-            )
-        report = json.loads(report_json)
-        self.assertIsNone(latest)
-        self.assertEqual(decision, "PARTIAL_FAILURE")
-        self.assertEqual(report["succeeded"], 1)
-        self.assertEqual(report["failed"], 1)
-        self.assertEqual(report["results"][1]["decision"], "ERROR")
+            with self.assertRaisesRegex(ValueError, "no IMAGE output"):
+                ComicAssetBatchGenerationLoop().run_batch(
+                    json.dumps([
+                        {"asset_request": first, "references": []},
+                        {"asset_request": second, "references": []},
+                    ]),
+                    "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                    "", "gemini-test", "https://example.invalid", 10, 0,
+                )
 
     def test_successful_asset_is_reused_by_page_hash_and_character_identity(self):
         saved = self.assets.register_batch(
@@ -865,43 +860,28 @@ class ComicWorkflowTests(unittest.TestCase):
         self.assertIn("speech bubbles, text", prompt)
 
     def test_batch_generation_skips_pages_without_characters(self):
-        latest, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
-            "[]", "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
-            "", "gemini-test", "https://example.invalid", 10, 0,
-        )
-        report = json.loads(report_json)
-        self.assertIsNone(latest)
-        self.assertEqual(decision, "NO_CHARACTERS")
-        self.assertEqual(report["total"], 0)
-
-    def test_batch_generation_returns_all_images_as_one_batch(self):
-        first = {"request_id": "request-1", "project_id": "project-1", "asset_type": "character_portrait"}
-        second = {"request_id": "request-2", "project_id": "project-1", "asset_type": "scene_reference"}
-        image1 = np.zeros((1, 2, 3, 3), dtype=np.float32)
-        image2 = np.ones((1, 3, 4, 3), dtype=np.float32)
-        with patch.object(
-            GeminiQwenAssetGenerationLoop,
-            "generate",
-            side_effect=[
-                (image1, {"request_id": "request-1"}, "PASS"),
-                (image2, {"request_id": "request-2"}, "PASS"),
-            ],
-        ):
-            batch, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
-                json.dumps([
-                    {"asset_request": first, "references": []},
-                    {"asset_request": second, "references": []},
-                ]),
-                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+        with self.assertRaisesRegex(ValueError, "no image requests"):
+            ComicAssetBatchGenerationLoop().run_batch(
+                "[]", "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
                 "", "gemini-test", "https://example.invalid", 10, 0,
             )
-        report = json.loads(report_json)
-        self.assertEqual(decision, "PASS")
-        self.assertEqual(batch.shape, (2, 3, 4, 3))
-        self.assertEqual(report["output_image_count"], 2)
-        self.assertEqual([item["output_index"] for item in report["results"]], [0, 1])
 
-    def test_batch_cache_reloads_reused_asset_into_batch_images(self):
+    def test_page_resource_reader_rejects_unbound_requests(self):
+        first = {"request_id": "request-1", "project_id": "project-1", "asset_type": "character_portrait"}
+        second = {"request_id": "request-2", "project_id": "project-1", "asset_type": "scene_reference"}
+        with patch.object(GeminiQwenAssetGenerationLoop, "generate") as generate:
+            with self.assertRaisesRegex(ValueError, "no IMAGE output"):
+                ComicAssetBatchGenerationLoop().run_batch(
+                    json.dumps([
+                        {"asset_request": first, "references": []},
+                        {"asset_request": second, "references": []},
+                    ]),
+                    "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                    "", "gemini-test", "https://example.invalid", 10, 0,
+                )
+        generate.assert_not_called()
+
+    def test_page_resource_reader_does_not_use_legacy_asset_cache(self):
         request = {
             "request_id": "cached-request",
             "project_id": "project-1",
@@ -927,15 +907,12 @@ class ComicWorkflowTests(unittest.TestCase):
         with patch("create_manga_story.nodes.asset_workflow_nodes._repository", return_value=self.assets), \
              patch("create_manga_story.nodes.asset_workflow_nodes._load_asset_image", return_value=cached_image), \
              patch.object(GeminiQwenAssetGenerationLoop, "generate") as generate:
-            batch, report_json, decision = ComicAssetBatchGenerationLoop().run_batch(
-                json.dumps([{"asset_request": request, "references": []}]),
-                "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
-                "", "gemini-test", "https://example.invalid", 10, 0,
-            )
-        report = json.loads(report_json)
-        self.assertEqual(decision, "PASS")
-        self.assertEqual(report["results"][0]["decision"], "REUSED")
-        self.assertEqual(batch.shape, (1, 2, 3, 3))
+            with self.assertRaisesRegex(ValueError, "no IMAGE output"):
+                ComicAssetBatchGenerationLoop().run_batch(
+                    json.dumps([{"asset_request": request, "references": []}]),
+                    "unet", "clip", "vae", 10, 20, 4.0, 0, 0.8,
+                    "", "gemini-test", "https://example.invalid", 10, 0,
+                )
         generate.assert_not_called()
 
     def test_stack_batch_images_normalizes_rgb_rgba_and_grayscale(self):

@@ -164,6 +164,65 @@ _WORKFLOW_SCHEMA = (
     )""",
     """CREATE INDEX IF NOT EXISTS idx_asset_workflow_iterations_request
         ON asset_workflow_iterations(request_id, attempt_index)""",
+    """CREATE TABLE IF NOT EXISTS chapter_asset_groups (
+        group_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('character', 'location')),
+        entity_id TEXT NOT NULL DEFAULT '',
+        variant_key TEXT NOT NULL,
+        variant_type TEXT NOT NULL,
+        variant_description TEXT NOT NULL DEFAULT '',
+        selected_source_asset_id TEXT,
+        generated_asset_id TEXT,
+        source_fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'planned'
+            CHECK(status IN ('planned', 'selecting', 'generating', 'approved', 'reused', 'retry', 'error')),
+        decision_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(project_id, chapter_id, entity_type, entity_id, variant_key),
+        FOREIGN KEY(project_id) REFERENCES projects(project_id),
+        FOREIGN KEY(project_id, chapter_id) REFERENCES chapters(project_id, chapter_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_chapter_asset_groups_scope
+        ON chapter_asset_groups(project_id, chapter_id, entity_type, status)""",
+    """CREATE TABLE IF NOT EXISTS chapter_asset_group_sources (
+        group_id TEXT NOT NULL,
+        source_crop_asset_id TEXT NOT NULL,
+        source_page_id TEXT NOT NULL,
+        panel_index INTEGER NOT NULL DEFAULT 0,
+        reference_quality REAL NOT NULL CHECK(reference_quality >= 0 AND reference_quality <= 1),
+        is_selected INTEGER NOT NULL DEFAULT 0 CHECK(is_selected IN (0, 1)),
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY(group_id, source_crop_asset_id),
+        FOREIGN KEY(group_id) REFERENCES chapter_asset_groups(group_id) ON DELETE CASCADE,
+        FOREIGN KEY(source_crop_asset_id) REFERENCES assets(asset_id),
+        FOREIGN KEY(source_page_id) REFERENCES pages(page_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_chapter_asset_group_sources_quality
+        ON chapter_asset_group_sources(group_id, is_selected, reference_quality DESC)""",
+    """CREATE TABLE IF NOT EXISTS chapter_asset_page_bindings (
+        binding_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_id TEXT NOT NULL,
+        page_id TEXT NOT NULL,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('character', 'location')),
+        entity_id TEXT NOT NULL DEFAULT '',
+        group_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        variant_key TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(project_id, chapter_id, page_id, entity_type, entity_id, group_id),
+        FOREIGN KEY(project_id) REFERENCES projects(project_id),
+        FOREIGN KEY(project_id, chapter_id) REFERENCES chapters(project_id, chapter_id),
+        FOREIGN KEY(page_id) REFERENCES pages(page_id),
+        FOREIGN KEY(group_id) REFERENCES chapter_asset_groups(group_id) ON DELETE CASCADE,
+        FOREIGN KEY(asset_id) REFERENCES assets(asset_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_chapter_asset_page_bindings_lookup
+        ON chapter_asset_page_bindings(project_id, chapter_id, page_id, entity_type, entity_id)""",
 )
 
 

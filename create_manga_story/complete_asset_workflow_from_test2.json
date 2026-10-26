@@ -1085,9 +1085,7 @@
       "mode": 0,
       "inputs": [
         {"name": "project_id", "type": "STRING", "widget": {"name": "project_id"}, "link": 2},
-        {"name": "generated_character_images", "type": "IMAGE", "link": 96},
         {"name": "asset_generation_report", "type": "STRING", "link": 95},
-        {"name": "voice_instruction", "type": "STRING", "widget": {"name": "voice_instruction"}, "link": 94},
         {"name": "reference_text", "type": "STRING", "widget": {"name": "reference_text"}},
         {"name": "language", "type": "COMBO", "widget": {"name": "language"}},
         {"name": "model_path", "type": "STRING", "widget": {"name": "model_path"}},
@@ -1104,26 +1102,6 @@
       "properties": {"Node name for S&R": "ComicAssetVoiceGenerationAndExport"},
       "widgets_values": ["", "有一天，兔子碰见乌龟，看见乌龟爬得这么慢，就想戏弄戏弄他，于是笑眯眯地说：\"乌龟，乌龟，咱们来赛跑，好吗？\"", "Chinese", "D:\\ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\my_comfyui\\voiceCreate\\models\\Qwen3-TTS-12Hz-1.7B-VoiceDesign", "exports/audio", "page_character_reference", "auto", false],
       "widgets_values_named": {"project_id": "", "reference_text": "有一天，兔子碰见乌龟，看见乌龟爬得这么慢，就想戏弄戏弄他，于是笑眯眯地说：\"乌龟，乌龟，咱们来赛跑，好吗？\"", "language": "Chinese", "model_path": "D:\\ComfyUI_windows_portable\\ComfyUI\\custom_nodes\\my_comfyui\\voiceCreate\\models\\Qwen3-TTS-12Hz-1.7B-VoiceDesign", "output_directory": "exports/audio", "filename_prefix": "page_character_reference", "device": "auto", "force_regenerate": false}
-    },
-    {
-      "id": 48,
-      "type": "ComicPageVoiceInstructionBuilder",
-      "pos": [4700, 650],
-      "size": [420, 230],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {"name": "entity_resolution", "type": "COMIC_ENTITY_RESOLUTION", "link": 54},
-        {"name": "asset_generation_report", "type": "STRING", "link": 93}
-      ],
-      "outputs": [
-        {"name": "voice_instruction", "type": "STRING", "slot_index": 0, "links": [94]}
-      ],
-      "title": "当前页角色声音指令（性别与音色）",
-      "properties": {"Node name for S&R": "ComicPageVoiceInstructionBuilder"},
-      "widgets_values": ["自然、清晰、稳定的动漫角色参考音色。"],
-      "widgets_values_named": {"base_instruction": "自然、清晰、稳定的动漫角色参考音色。", "asset_generation_report": "{}"}
     },
     {
       "id": 44,
@@ -1425,28 +1403,12 @@
       "STRING"
     ],
     [
-      94,
-      48,
-      0,
-      43,
-      4,
-      "STRING"
-    ],
-    [
       95,
       37,
       1,
       43,
-      3,
+      1,
       "STRING"
-    ],
-    [
-      96,
-      37,
-      0,
-      43,
-      2,
-      "IMAGE"
     ],
     [
       64,

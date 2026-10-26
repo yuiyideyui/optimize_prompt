@@ -85,6 +85,45 @@ def _gemini_reference_quality(entry: Dict[str, Any]) -> float:
     return min(0.99, 0.35 + min(area, 1.0) * 0.35 + detail * 0.05 + confidence * 0.25)
 
 
+def _preserve_source_order_with_best_references(
+    entries: List[Dict[str, Any]], entity_type: str
+) -> List[Dict[str, Any]]:
+    """Preserve Gemini order; use quality only within duplicate groups."""
+    groups: Dict[str, List[Tuple[int, Dict[str, Any]]]] = {}
+    group_order: List[str] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+        same_key = str(
+            entry.get("same_entity_key", entry.get("same_location_key", ""))
+        ).strip()
+        matched_id = str(entry.get("matched_entity_id", "")).strip()
+        raw_name = (
+            source.get("identity_candidate") or source.get("name")
+            or entry.get("identity_candidate") or entry.get("name") or ""
+        )
+        normalized_name = "".join(char.casefold() for char in str(raw_name) if char.isalnum())
+        if same_key:
+            group_key = "same:" + same_key.casefold()
+        elif matched_id:
+            group_key = "id:" + matched_id
+        elif entity_type in ("character", "location") and normalized_name:
+            group_key = "name:" + normalized_name
+        else:
+            group_key = "index:{}".format(index)
+        if group_key not in groups:
+            groups[group_key] = []
+            group_order.append(group_key)
+        groups[group_key].append((index, entry))
+    ordered: List[Dict[str, Any]] = []
+    for group_key in group_order:
+        group = groups[group_key]
+        group.sort(key=lambda pair: (-_gemini_reference_quality(pair[1]), pair[0]))
+        ordered.extend(entry for _, entry in group)
+    return ordered
+
+
 def _is_macro_location(entry: Dict[str, Any]) -> bool:
     """Reject incidental location fragments before creating image requests."""
     scope = str(entry.get("scene_scope", "")).strip().lower()
@@ -540,6 +579,8 @@ class ComicAssetAutoTargetBatchBuilder:
                 "update_report": ("COMIC_KB_UPDATE_REPORT",),
                 "pages": ("COMIC_PAGES",),
                 "page_index": ("INT", {"default": 1, "min": 1}),
+                "chapter_id": ("STRING", {"default": ""}),
+                "require_chapter_assets": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -549,7 +590,9 @@ class ComicAssetAutoTargetBatchBuilder:
     CATEGORY = "Comic2Anime/Assets"
 
     @staticmethod
-    def _should_generate_character(entry: Dict[str, Any], has_reference: bool) -> Tuple[bool, str]:
+    def _should_generate_character(
+        entry: Dict[str, Any], has_reference: bool, asset_type: str = "character_portrait"
+    ) -> Tuple[bool, str]:
         """Keep minor/page-only figures out of the asset-generation queue.
 
         Existing character references are reused for partial views; a new sheet
@@ -558,6 +601,8 @@ class ComicAssetAutoTargetBatchBuilder:
         explicit = entry.get("generate_asset")
         if explicit is False:
             return False, "entity_marked_nonessential"
+        if explicit is True:
+            return True, "explicit_generation_requested"
         importance = str(
             entry.get("importance", entry.get("narrative_importance", ""))
         ).strip().lower()
@@ -566,29 +611,201 @@ class ComicAssetAutoTargetBatchBuilder:
             return False, "nonessential_character"
         if role in {"background", "minor", "incidental", "crowd", "extra", "nonessential"}:
             return False, "nonessential_character"
-        if has_reference:
-            source = entry.get("source")
-            crop_box = entry.get("crop_box")
-            if crop_box is None and isinstance(source, dict):
-                crop_box = source.get("crop_box")
-            crop_height = None
-            if isinstance(crop_box, dict):
-                try:
-                    crop_height = float(crop_box.get("height"))
-                except (TypeError, ValueError):
-                    crop_height = None
-            partial = (
-                entry.get("partial_view") is True
-                or entry.get("is_partial") is True
-                or (crop_height is not None and crop_height < 70)
-            )
+        if has_reference and asset_type in ("character_portrait", "character_turnaround"):
             change = any(
                 entry.get(key) is True
                 for key in ("appearance_changed", "new_outfit", "new_appearance", "needs_new_reference")
             )
-            if partial and not change:
-                return False, "reuse_existing_reference_for_partial_view"
+            if not change:
+                return False, "reuse_existing_reference_for_same_character"
         return True, "new_or_explicitly_changed_appearance"
+
+    @staticmethod
+    def _chapter_asset_references(
+        repo: AssetRepository,
+        project_id: str,
+        chapter_id: str,
+        entity_type: str,
+        entity_id: str,
+        source_page_id: Optional[str],
+        entry: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Return approved chapter masters bound to this page/entity first."""
+        if not chapter_id.strip():
+            return []
+        requested_variant = str(
+            entry.get("variant_key") or entry.get("variant_type") or ""
+        ).strip().casefold()
+        with repo.database.connect() as connection:
+            page_rows = connection.execute(
+                """SELECT b.group_id, b.variant_key, b.asset_id AS generated_asset_id,
+                          a.status AS asset_status, 1 AS page_match
+                     FROM chapter_asset_page_bindings b
+                     JOIN assets a ON a.asset_id = b.asset_id
+                    WHERE b.project_id = ? AND b.chapter_id = ? AND b.page_id = ?
+                      AND b.entity_type = ? AND b.entity_id = ?
+                      AND a.project_id = ? AND a.status = 'approved'
+                    ORDER BY b.updated_at DESC""",
+                (project_id, chapter_id, source_page_id or "", entity_type, entity_id, project_id),
+            ).fetchall()
+            if page_rows:
+                return [{
+                    "asset_id": row["generated_asset_id"],
+                    "role": "chapter_asset_reference",
+                    "reason": "SQLite page-level chapter asset binding.",
+                    "chapter_asset_group_id": row["group_id"],
+                    "variant_key": row["variant_key"],
+                } for row in page_rows[:1]]
+            rows = connection.execute(
+                """SELECT g.group_id, g.variant_key, g.variant_type,
+                          g.generated_asset_id, a.status AS asset_status,
+                          EXISTS(
+                              SELECT 1 FROM chapter_asset_group_sources s
+                              WHERE s.group_id = g.group_id AND s.source_page_id = ?
+                          ) AS page_match
+                     FROM chapter_asset_groups g
+                     JOIN assets a ON a.asset_id = g.generated_asset_id
+                    WHERE g.project_id = ? AND g.chapter_id = ?
+                      AND g.entity_type = ? AND g.entity_id = ?
+                      AND g.status IN ('approved', 'reused')
+                      AND a.project_id = ? AND a.status = 'approved'
+                    ORDER BY page_match DESC, g.variant_key ASC""",
+                (source_page_id or "", project_id, chapter_id, entity_type, entity_id, project_id),
+            ).fetchall()
+        candidates = [dict(row) for row in rows]
+        # Older chapter runs may have generated approved assets before the
+        # entity resolver assigned a stable entity_id. In that case, resolve
+        # by the persisted source-page evidence and stable same_* key instead
+        # of forcing a second generation.
+        if not candidates and entity_type == "location":
+            requested_same_key = str(entry.get("same_location_key", "")).strip().casefold()
+            requested_name = str(
+                entry.get("location_name") or entry.get("name")
+                or entry.get("identity_candidate") or ""
+            ).strip().casefold()
+            # Some older entity-resolution payloads only carry a newly-created
+            # location_id.  Resolve its canonical name before looking through
+            # legacy chapter groups whose entity_id was empty.
+            if not requested_name and entity_id.strip():
+                with repo.database.connect() as connection:
+                    location_row = connection.execute(
+                        "SELECT canonical_name FROM locations WHERE location_id = ? AND project_id = ?",
+                        (entity_id, project_id),
+                    ).fetchone()
+                if location_row:
+                    requested_name = str(location_row["canonical_name"] or "").strip().casefold()
+            with repo.database.connect() as connection:
+                rows = connection.execute(
+                    """SELECT g.group_id, g.variant_key, g.variant_type,
+                              g.generated_asset_id, a.status AS asset_status,
+                              EXISTS(
+                                  SELECT 1 FROM chapter_asset_group_sources s
+                                  WHERE s.group_id = g.group_id AND s.source_page_id = ?
+                              ) AS page_match,
+                              EXISTS(
+                                  SELECT 1 FROM chapter_asset_group_sources s
+                                  WHERE s.group_id = g.group_id AND s.source_page_id = ?
+                                    AND s.panel_index = ?
+                              ) AS panel_match,
+                              g.decision_json
+                         FROM chapter_asset_groups g
+                         JOIN assets a ON a.asset_id = g.generated_asset_id
+                        WHERE g.project_id = ? AND g.chapter_id = ?
+                          AND g.entity_type = 'location' AND g.entity_id = ''
+                          AND g.status IN ('approved', 'reused')
+                          AND a.project_id = ? AND a.status = 'approved'
+                        ORDER BY page_match DESC, g.variant_key ASC""",
+                    (
+                        source_page_id or "", source_page_id or "",
+                        int(entry.get("panel_index", -1) or -1),
+                        project_id, chapter_id, project_id,
+                    ),
+                ).fetchall()
+            for row in rows:
+                item = dict(row)
+                try:
+                    decision = json.loads(item.get("decision_json") or "{}")
+                except json.JSONDecodeError:
+                    decision = {}
+                group = decision.get("group") if isinstance(decision.get("group"), dict) else {}
+                source_keys = []
+                for source_index in group.get("source_indices", []) if isinstance(group.get("source_indices"), list) else []:
+                    source_keys.append(str(source_index))
+                description = " ".join(str(group.get(key, "")) for key in ("variant_key", "variant_description"))
+                evidence_text = str(decision.get("report", {}).get("prompt", "")) if isinstance(decision.get("report"), dict) else ""
+                haystack = (description + " " + evidence_text).casefold()
+                same_key_match = bool(requested_same_key and requested_same_key in haystack)
+                name_match = bool(requested_name and requested_name in haystack)
+                if requested_same_key and not same_key_match:
+                    # The source rows are authoritative for same_location_key.
+                    with repo.database.connect() as source_connection:
+                        source_match = source_connection.execute(
+                            "SELECT evidence_json FROM chapter_asset_group_sources WHERE group_id = ?",
+                            (item["group_id"],),
+                        ).fetchall()
+                    for source_row in source_match:
+                        try:
+                            evidence = json.loads(source_row["evidence_json"] or "{}")
+                        except json.JSONDecodeError:
+                            evidence = {}
+                        if str(evidence.get("same_location_key", "")).strip().casefold() == requested_same_key:
+                            same_key_match = True
+                            break
+                # Several macro locations may share one source page.  The
+                # panel is the reliable discriminator; page_match alone must
+                # not make every request resolve to the first scene.
+                if (
+                    same_key_match
+                    or name_match
+                    or item.get("panel_match")
+                    or (
+                        not requested_same_key
+                        and not requested_name
+                        and item.get("page_match")
+                    )
+                ):
+                    candidates.append(item)
+            panel_candidates = [row for row in candidates if row.get("panel_match")]
+            if panel_candidates:
+                candidates = panel_candidates
+        if requested_variant:
+            exact = [
+                row for row in candidates
+                if requested_variant in {
+                    str(row.get("variant_key", "")).casefold(),
+                    str(row.get("variant_type", "")).casefold(),
+                }
+            ]
+            if exact:
+                candidates = exact
+        else:
+            normal = [
+                row for row in candidates
+                if str(row.get("variant_key", "")).casefold() == "normal"
+                or str(row.get("variant_type", "")).casefold() in {"normal", "day"}
+            ]
+            if normal:
+                candidates = normal
+        references = []
+        seen = set()
+        for row in candidates:
+            asset_id = row.get("generated_asset_id")
+            if not asset_id or asset_id in seen:
+                continue
+            seen.add(asset_id)
+            references.append({
+                "asset_id": asset_id,
+                "role": "chapter_asset_reference",
+                "reason": "Approved chapter master selected by project, chapter, entity, and source page.",
+                "chapter_asset_group_id": row.get("group_id"),
+                "variant_key": row.get("variant_key"),
+                "variant_type": row.get("variant_type"),
+            })
+        # A batch item represents one entity/state occurrence.  Even when a
+        # legacy empty-entity binding produces several page/name candidates,
+        # expose only one deterministic chapter master; otherwise one request
+        # expands into multiple ``batch_images`` outputs.
+        return references[:1]
 
     def build_requests(
         self,
@@ -599,6 +816,8 @@ class ComicAssetAutoTargetBatchBuilder:
         update_report: Optional[Dict[str, Any]] = None,
         pages: Optional[List[Dict[str, Any]]] = None,
         page_index: int = 1,
+        chapter_id: str = "",
+        require_chapter_assets: bool = False,
     ):
         if isinstance(entity_resolution, str):
             try:
@@ -678,16 +897,10 @@ class ComicAssetAutoTargetBatchBuilder:
             if not isinstance(entries, list):
                 raise ValueError("entity_resolution.{} must be an array.".format(key))
             source_counts[entity_type] = len(entries)
-            # Gemini returns every occurrence, but repeated occurrences of one
-            # entity must use the clearest crop as the generation source.  Sort
-            # quality-first before the existing identity de-duplication logic.
-            entries = sorted(
-                entries,
-                key=lambda item: (
-                    -_gemini_reference_quality(item) if isinstance(item, dict) else 0.0,
-                    int(item.get("source_index", 0)) if isinstance(item, dict) and str(item.get("source_index", "")).isdigit() else 0,
-                ),
-            )
+            # Preserve Gemini's source order for distinct entities. For
+            # repeated occurrences, put only the clearest occurrence first so
+            # de-duplication selects its crop without reordering the batch.
+            entries = _preserve_source_order_with_best_references(entries, entity_type)
             for index, entry in enumerate(entries):
                 if not isinstance(entry, dict):
                     continue
@@ -700,6 +913,7 @@ class ComicAssetAutoTargetBatchBuilder:
                         "name": entry.get("name", ""),
                     })
                     continue
+                reuse_existing = False
                 # A matcher may retain a deterministic candidate id in
                 # entity_id while matched_entity_id points at the real entity.
                 entity_id = entry.get("matched_entity_id") or entry.get("entity_id")
@@ -774,27 +988,58 @@ class ComicAssetAutoTargetBatchBuilder:
                     })
                     continue
                 seen.add(unique_key)
-                references = repo.get_reference_assets(
+                chapter_references = self._chapter_asset_references(
+                    repo, project_id, chapter_id, entity_type, entity_id,
+                    source_page.get("page_id") if source_page else None, entry,
+                )
+                existing_references = repo.get_reference_assets(
                     project_id, entity_type, entity_id
-                )[:3]
+                )
+                chapter_ids = {item["asset_id"] for item in chapter_references}
+                references = chapter_references + [
+                    item for item in existing_references
+                    if item["asset_id"] not in chapter_ids
+                ]
+                references = references[:3]
+                has_chapter_reference = bool(chapter_references)
+                if require_chapter_assets and not has_chapter_reference:
+                    report_items.append({
+                        "entity_type": entity_type,
+                        "source_index": entry.get("source_index", index),
+                        "entity_id": entity_id,
+                        "status": "NEEDS_CHAPTER_ASSET",
+                        "skip_reason": "No approved ComicChapterAssetGeneration asset is bound to this entity/page/variant.",
+                        "chapter_id": chapter_id,
+                        "source_page_id": source_page.get("page_id") if source_page else None,
+                    })
+                    continue
                 if entity_type == "character":
                     should_generate, skip_reason = self._should_generate_character(
-                        entry, bool(references)
+                        entry, bool(references), asset_type
                     )
                     if not should_generate:
-                        report_items.append({
-                            "entity_type": entity_type,
-                            "source_index": entry.get("source_index", index),
-                            "entity_id": entity_id,
-                            "status": "REUSE_REFERENCE" if references else "SKIP_NONESSENTIAL",
-                            "skip_reason": skip_reason,
-                            "reused_reference_asset_ids": [
-                                asset["asset_id"] for asset in references
-                            ],
-                            "resolution_status": entry.get("status", ""),
-                            "confidence": entry.get("confidence", 0.0),
-                        })
-                        continue
+                        # Keep the existing approved reference in the batch so
+                        # downstream nodes receive the character image without
+                        # invoking Qwen again.  This is a reuse operation, not
+                        # a new asset generation request.
+                        if skip_reason in (
+                            "reuse_existing_reference_for_partial_view",
+                            "reuse_existing_reference_for_same_character",
+                        ):
+                            item_status = "REUSE_REFERENCE"
+                            reuse_existing = True
+                        else:
+                            report_items.append({
+                                "entity_type": entity_type,
+                                "source_index": entry.get("source_index", index),
+                                "entity_id": entity_id,
+                                "status": "SKIP_NONESSENTIAL",
+                                "skip_reason": skip_reason,
+                                "reused_reference_asset_ids": [asset["asset_id"] for asset in references],
+                                "resolution_status": entry.get("status", ""),
+                                "confidence": entry.get("confidence", 0.0),
+                            })
+                            continue
                 reference_items = [
                     {
                         "asset_id": asset["asset_id"],
@@ -803,8 +1048,29 @@ class ComicAssetAutoTargetBatchBuilder:
                     }
                     for asset in references
                 ]
-                request_asset_type = asset_type
-                if entity_type == "location" and asset_type.startswith("character_"):
+                # Always retain the current comic occurrence for character
+                # decisions. Approved identity assets describe the reusable
+                # baseline; the page crop is the evidence Gemini must compare
+                # against before deciding whether a new variant is needed.
+                if entity_type == "character" and source_page and isinstance(entry_crop_box, dict):
+                    reference_items.insert(0, {
+                        "source_page_id": source_page["page_id"],
+                        "role": "character_source_crop",
+                        "reason": "Current comic occurrence used for identity/appearance comparison.",
+                        "crop_box": entry_crop_box,
+                    })
+                    reference_items = reference_items[:3]
+                # The builder can receive one UI-level asset type for a mixed
+                # page. Normalize it per entity so characters are never sent
+                # through the scene workflow. A character request marked as
+                # scene_reference bypasses character reuse/change detection
+                # and can generate duplicate or scene-style images.
+                if entity_type == "character":
+                    request_asset_type = (
+                        asset_type if asset_type.startswith("character_")
+                        else "character_portrait"
+                    )
+                else:
                     request_asset_type = "scene_reference"
                 if not reference_items and source_page:
                     source = entry.get("source", {})
@@ -819,6 +1085,11 @@ class ComicAssetAutoTargetBatchBuilder:
                     item_status = "READY_PAGE_SOURCE"
                 else:
                     item_status = "READY" if reference_items else "NEEDS_REFERENCE"
+                if has_chapter_reference:
+                    item_status = "REUSE_REFERENCE"
+                    reuse_existing = True
+                if reuse_existing:
+                    item_status = "REUSE_REFERENCE"
                 request = {
                     "schema_version": "1.0",
                     "request_id": str(uuid.uuid4()),
@@ -845,11 +1116,13 @@ class ComicAssetAutoTargetBatchBuilder:
                         "reference_quality_reason", ""
                     ),
                     "same_location_key": entry.get("same_location_key", ""),
+                    "panel_index": entry.get("panel_index"),
                     "source_page_hash": source_page.get("sha256") if source_page else None,
                     "source_page_id": source_page.get("page_id") if source_page else None,
-                    "warnings": [] if item_status in ("READY", "READY_PAGE_SOURCE") else [
+                    "warnings": [] if item_status in ("READY", "READY_PAGE_SOURCE", "REUSE_REFERENCE") else [
                         "No approved reference asset is available for this page entity."
                     ],
+                    "auto_approve": True,
                 }
                 if item_status == "READY_PAGE_SOURCE":
                     if reference_items[0].get("crop_box") is not None:
@@ -870,7 +1143,7 @@ class ComicAssetAutoTargetBatchBuilder:
                 })
 
         report = {
-            "selection_policy": "important_characters_only_reuse_existing_partial_views",
+            "selection_policy": "chapter_assets_required" if require_chapter_assets else "important_characters_only_reuse_existing_partial_views",
             "total_entity_count": len(requests),
             "character_count": sum(
                 item.get("entity_type") == "character" for item in report_items
@@ -889,6 +1162,9 @@ class ComicAssetAutoTargetBatchBuilder:
             ),
             "needs_reference_count": sum(
                 item["status"] == "NEEDS_REFERENCE" for item in report_items
+            ),
+            "needs_chapter_asset_count": sum(
+                item["status"] == "NEEDS_CHAPTER_ASSET" for item in report_items
             ),
             "reused_reference_count": sum(
                 item["status"] == "REUSE_REFERENCE" for item in report_items

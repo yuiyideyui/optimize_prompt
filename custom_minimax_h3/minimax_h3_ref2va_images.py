@@ -212,8 +212,6 @@ def _audio_batch_values(batch):
         raise ValueError("ref_audios waveform must have shape [B, C, L] and include sample_rate")
     if any(size < 1 for size in waveform.shape):
         raise ValueError("ref_audios waveform must not contain an empty dimension")
-    if waveform.shape[0] > 3:
-        raise ValueError("MiniMax H3 supports at most 3 standalone reference audios")
     return {
         f"ref_audio_{index}": {
             "waveform": waveform[index - 1:index],
@@ -221,6 +219,19 @@ def _audio_batch_values(batch):
         }
         for index in range(1, waveform.shape[0] + 1)
     }
+
+
+def _validate_selected_audio_count(audio_values):
+    """Validate the references that will actually be sent to MiniMax.
+
+    ``ref_audios`` may contain the complete page voice manifest.  The prompt
+    can use only a subset through ``<Audio N>`` tags, so validating the raw
+    upstream batch would reject valid shots unnecessarily.
+    """
+    count = len(audio_values or {})
+    if count > 3:
+        raise ValueError("MiniMax H3 supports at most 3 standalone reference audios; "
+                         "the current prompt selects {}.".format(count))
 
 
 class MiniMaxH3SamplingSetup:
@@ -455,6 +466,7 @@ class MiniMaxH3BatchRefToVideo:
                 used_media.get("audios", set()),
                 "ref_audio"
             ) if used_media.get("audios") else ({}, {})
+            _validate_selected_audio_count(audios)
 
             effective_strict_prompt_tags = strict_prompt_tags
 
@@ -583,6 +595,7 @@ class MiniMaxH3BatchRefToVideo:
             used_media.get("audios", set()),
             "ref_audio"
         ) if used_media.get("audios") else ({}, {})
+        _validate_selected_audio_count(audio_values)
 
         # 步骤6：调整 prompt_primary_audio_ordinal 如果它超过了过滤后的音频数量
         effective_prompt_primary_audio_ordinal = prompt_primary_audio_ordinal

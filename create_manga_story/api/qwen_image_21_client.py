@@ -21,7 +21,8 @@ def compress_reference_for_qwen(
         tensor = tensor.unsqueeze(0)
     if tensor.ndim != 4 or tensor.shape[-1] not in (3, 4):
         raise ValueError("Qwen reference image must have shape [batch,height,width,channels].")
-    array = tensor[0].numpy()
+    first = tensor[0]
+    array = first.numpy() if hasattr(first, "numpy") else np.asarray(first)
     array = np.clip(array * 255.0 if array.dtype.kind == "f" and array.max() <= 1.0 else array, 0, 255).astype(np.uint8)
     pil = Image.fromarray(array[:, :, :3], "RGB")
     if pil.width != target_width:
