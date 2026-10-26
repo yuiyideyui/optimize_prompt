@@ -52,7 +52,11 @@ The following records the complete functional scope of the current asset/workflo
 ### Voice and MiniMax integration
 
 - `voice_story_nodes.py` consumes the page asset batch report, repairs missing project-local character rows before FK-backed voice profile creation, and carries character identity, appearance, gender, age and emotion evidence forward.
-- Voice cache reuse checks persisted gender compatibility. Voice instructions include deterministic gender, age-band and identity constraints and prohibit an age/gender-inconsistent voice.
+- `character_voice_profiles` is the durable character-to-voice binding: `(project_id, character_id)` is the cache key and stores `voice_id`, audio path, language, model and sample text.
+- Once a valid WAV exists for a character binding, later pages must reuse that voice regardless of changed page wording, expression, clothing, age hints or imperfect gender evidence. Only `force_regenerate=true` may replace it.
+- Voice manifests must carry `project_id`, `character_id`, `voice_id`, `audio_path`, `reused/generated` status and the character display name so WAV export cannot lose the role binding.
+- The voice report must expose `reused_count` and `generated_count`; repeated page execution should increase reuse, not generation.
+- Voice instructions include deterministic gender, age-band and identity constraints and prohibit an age/gender-inconsistent voice when a new voice is explicitly generated.
 - `custom_minimax_h3/minimax_h3_ref2va_images.py` validates only the audio references selected for the current prompt and enforces the maximum of three standalone reference audios.
 - `AutoAnimeStoryboardPipeline.py` and related voice/story handoffs use the updated asset and character metadata contract.
 

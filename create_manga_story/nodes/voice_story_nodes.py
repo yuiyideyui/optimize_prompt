@@ -310,10 +310,11 @@ class ComicCharacterVoiceReference:
                 (project_id, character_id),
             ).fetchone()
         profile = _json_object(character_profile_json, "character_profile_json")
-        requested_gender = profile.get("gender") or ""
-        if existing is not None and not force_regenerate and _voice_cache_matches_gender(
-            existing["voice_instruction"], requested_gender
-        ):
+        # The persisted character binding is authoritative.  A character's
+        # voice must not be regenerated because a later page describes gender,
+        # age or appearance differently.  Only an explicit force_regenerate
+        # request may replace the voice for this project/character pair.
+        if existing is not None and not force_regenerate:
             path = Path(existing["audio_path"])
             if path.is_file():
                 import soundfile as sf
@@ -324,7 +325,7 @@ class ComicCharacterVoiceReference:
                     "voice_id": existing["voice_id"], "project_id": project_id,
                     "character_id": character_id, "reference_text": existing["sample_text"],
                     "audio_path": str(path), "sample_rate": int(sample_rate),
-                    "reused": True,
+                    "reused": True, "generated": False,
                 }
                 return ({"waveform": waveform, "sample_rate": int(sample_rate)}, existing["voice_id"], json.dumps(manifest, ensure_ascii=False))
 
@@ -352,6 +353,7 @@ class ComicCharacterVoiceReference:
             "voice_id": voice_id, "project_id": project_id, "character_id": character_id,
             "reference_text": reference_text, "audio_path": str(audio_path),
             "sample_rate": int(sample_rate), "ref_audios_compatible": True,
+            "reused": False, "generated": True,
         }
         return audio, voice_id, json.dumps(manifest, ensure_ascii=False)
 
@@ -596,6 +598,8 @@ class ComicPageVoiceReferences:
         report = {
             "project_id": project_id,
             "character_count": len(manifests),
+            "reused_count": sum(bool(item.get("reused")) for item in manifests),
+            "generated_count": sum(bool(item.get("generated")) for item in manifests),
             "skipped": skipped,
             "ref_audios_compatible": True,
             "sample_rate": int(audios[0]["sample_rate"]) if audios else None,
